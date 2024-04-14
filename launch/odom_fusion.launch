@@ -1,0 +1,3 @@
+<launch>
+    <node name="odom_fusion" pkg="odom_fusion" type="odom_fusion_node" output="screen" args="$(find odom_fusion)/config/hyperparams.yaml" />
+</launch>

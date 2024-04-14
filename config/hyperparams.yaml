@@ -1,0 +1,41 @@
+%YAML:1.0
+
+# Data src 0
+vins_odom_topic: "/vins_estimator/imu_propagate"
+vins_odom_freq: 200.0
+# vins_odom_timeout: 0.1
+
+# Data src 1
+msckf_odom_topic: "/fla/vio/odom"
+msckf_odom_freq: 30.0
+# msckf_odom_timeout: 0.5
+
+# Data src 2
+fcu_odom_topic: "/mavros/local_position/odom"
+fcu_odom_freq: 100.0
+# fcu_odom_timeout: 0.15
+
+# Data src 3
+imu_topic: "/mavros/imu/data_raw"
+imu_freq: 200.0
+# imu_timeout: 0.1
+
+# Check 0: velocity magnitude check
+vel_mag_check_freq: 10.0
+max_vel: 1.0
+
+# Check 1: imu amplitude check
+imu_amp_check_freq: 10.0
+max_amp: 10.0
+
+# Check 2: negative position.z check
+neg_z_check_freq: 10.0
+min_z: -0.23
+
+
+
+takeoff_signal_topic_0: "/take_off_bace"
+takeoff_signal_topic_1: "/px4ctrl/takeoff_land"
+hover_signal_topic: "/traj_start_trigger"
+
+odom_output_topic: "odom"
