@@ -20,6 +20,11 @@ imu_topic: "/mavros/imu/data_raw"
 imu_freq: 200.0
 # imu_timeout: 0.1
 
+# Data src 4
+optical_flow_topic: "/mavros/px4flow/raw/optical_flow_rad"
+optical_flow_freq: 10.0
+optical_flow_timeout: 0.2
+
 # Check 0: velocity magnitude check
 vel_mag_check_freq: 10.0
 max_vel: 1.0

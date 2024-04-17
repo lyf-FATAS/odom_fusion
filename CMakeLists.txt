@@ -22,6 +22,7 @@ find_package(catkin REQUIRED COMPONENTS
     traj_utils
     quadrotor_msgs
     geometry_msgs
+    mavros_msgs
 )
 
 ## System dependencies are found with CMake's conventions
