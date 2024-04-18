@@ -1,16 +1,16 @@
 cmake_minimum_required(VERSION 3.0.2)
 project(odom_fusion)
 
-set(DEFAULT_BUILD_TYPE "Release")
+# set(DEFAULT_BUILD_TYPE "Debug")
+set(CMAKE_BUILD_TYPE "Debug")
 
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_CXX_STANDARD 17)
 
-# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pthread -fexceptions")
-set(CMAKE_CXX_FLAGS_RELEASE "-O3 ${CMAKE_CXX_FLAGS}")
-set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS}")
-
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pthread -fexceptions -g -ggdb")
+set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3 -Werror")
+set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -O0 -Wall")
 
 ## Find catkin macros and libraries
 ## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
@@ -19,10 +19,11 @@ find_package(catkin REQUIRED COMPONENTS
     roscpp
     nav_msgs
     sensor_msgs
-    traj_utils
+    # traj_utils
     quadrotor_msgs
     geometry_msgs
     mavros_msgs
+    std_srvs
 )
 
 ## System dependencies are found with CMake's conventions

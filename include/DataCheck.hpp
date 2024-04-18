@@ -11,7 +11,7 @@ class DataCheck
 {
 public:
     DataCheck(double check_freq_, DataSrc<Ts> &...data_src_)
-        : check_pass(false), check_freq(check_freq_), data_src(data_src_...)
+        : enable_check(true), check_pass(true), check_freq(check_freq_), data_src(data_src_...)
     {
         check_loop = thread(&DataCheck::processDataLoop, this);
     }
@@ -22,14 +22,25 @@ public:
         while (ros::ok())
         {
             if (apply([](const auto &...src)
-                      { return (src.stable_stream && ...); },
-                      data_src))
+                      { return (src.isStarted() && ...); },
+                      data_src) &&
+                enable_check)
             {
-                check_pass = processData();
+                if (apply([](const auto &...src)
+                          { return (src.stable_stream && ...); },
+                          data_src))
+                {
+                    check_pass = processData();
+                }
+                else
+                {
+                    check_pass = false;
+                }
             }
             else
             {
-                check_pass = false;
+                // The check is defined to be passed if it is not enabled or the source is not started
+                check_pass = true;
             }
             check_rate.sleep();
         }
@@ -37,6 +48,11 @@ public:
 
     virtual bool processData() = 0;
 
+    inline bool isPassed() { return check_pass; }
+
+    inline void stopCheck() { enable_check = false; }
+
+    bool enable_check;
     bool check_pass;
     double check_freq;
     tuple<DataSrc<Ts> &...> data_src;
