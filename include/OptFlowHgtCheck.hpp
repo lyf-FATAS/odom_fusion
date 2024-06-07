@@ -23,10 +23,10 @@ public:
         auto &[of_src] = data_src;
         mavros_msgs::OpticalFlowRad latest_of = of_src.getLatestDataCopy();
 
-        if (latest_of.distance > max_hgt)
+        if (latest_of.distance > max_hgt || latest_of.distance < 0)
         {
             if (check_pass == true)
-                ROS_ERROR_STREAM("[Odom Fusion] Height from optflow " << of_src.src_topic << " exceeds safety threshold (" << latest_of.distance << "m > " << max_hgt << "m) #^#");
+                ROS_ERROR_STREAM("[Odom Fusion] Height from optflow " << of_src.src_topic << " exceeds safety threshold (" << ((latest_of.distance > max_hgt) ? (to_string(latest_of.distance) + "m > " + to_string(max_hgt)) : (to_string(latest_of.distance) + "m < 0")) << "m) #^#");
             return false;
         }
         else

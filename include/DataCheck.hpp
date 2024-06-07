@@ -50,6 +50,7 @@ public:
 
     inline bool isPassed() { return check_pass; }
 
+    inline void startCheck() { enable_check = true; }
     inline void stopCheck() { enable_check = false; }
 
     bool enable_check;

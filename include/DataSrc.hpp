@@ -1,7 +1,7 @@
 #pragma once
 
 #include <mutex>
-#include <queue>
+#include <deque>
 #include <string>
 #include <ros/ros.h>
 
@@ -33,9 +33,9 @@ public:
     {
         lock_guard<mutex> lock(src_mutex);
 
-        data_buf.push(msg);
+        data_buf.push_back(msg);
         if (data_buf.size() > buf_size)
-            data_buf.pop();
+            data_buf.pop_front();
 
         src_started = stable_stream = recv_first_msg = recv_msg = inform_unstable = true;
     }
@@ -95,7 +95,7 @@ public:
         recv_first_msg = recv_msg = false;
         inform_unstable = true;
         inform_no_data_counter = 0;
-        queue<T> empty;
+        deque<T> empty;
         swap(data_buf, empty);
     }
 
@@ -108,9 +108,23 @@ public:
     inline T getLatestDataCopy() // TODO: + const and return ref
     {
         if (!recv_first_msg)
-            ROS_ERROR("[Odom Fusion] Unable to retrieve data, buffer is empty and the program should be dead ... Please contact the author: 13322809634, this is a class design issue #^#");
+            ROS_ERROR("[Odom Fusion] Unable to retrieve data, buffer is empty and the program should be dead ... Please contact LAJi_lyf: 13322809634, this is a class design issue #^#");
         lock_guard<mutex> lock(src_mutex);
         return data_buf.back();
+    }
+
+    inline T getPenultimateCopy(int i)
+    {
+        if (!recv_first_msg)
+            ROS_ERROR("[Odom Fusion] Unable to retrieve data, buffer is empty and the program should be dead ... Please contact LAJi_lyf: 13322809634, this is a class design issue #^#");
+        lock_guard<mutex> lock(src_mutex);
+        return data_buf[data_buf.size() - 1 - i];
+    }
+
+    inline int getBufSize()
+    {
+        lock_guard<mutex> lock(src_mutex);
+        return data_buf.size();
     }
 
     bool src_available;
@@ -119,7 +133,7 @@ public:
     double src_freq;
     double src_timeout;
     mutex src_mutex;
-    queue<T> data_buf;
+    deque<T> data_buf;
     bool src_started;
     bool stable_stream;
 

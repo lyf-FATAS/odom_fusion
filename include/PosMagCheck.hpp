@@ -26,37 +26,37 @@ public:
         if (latest_odom.pose.pose.position.x - init_x < min_x)
         {
             if (check_pass == true)
-                ROS_ERROR_STREAM("[Odom Fusion] Position from odometry " << odom_src.src_topic << " is beyond border (" << latest_odom.pose.pose.position.x - init_x << "m < " << min_x << "m) #^#");
+                ROS_ERROR_STREAM("[Odom Fusion] Position.x from odometry " << odom_src.src_topic << " is beyond border (" << latest_odom.pose.pose.position.x - init_x << "m < " << min_x << "m) #^#");
             return false;
         }
         else if (latest_odom.pose.pose.position.x - init_x > max_x)
         {
             if (check_pass == true)
-                ROS_ERROR_STREAM("[Odom Fusion] Position from odometry " << odom_src.src_topic << " is beyond border (" << latest_odom.pose.pose.position.x - init_x << "m > " << max_x << "m) #^#");
+                ROS_ERROR_STREAM("[Odom Fusion] Position.x from odometry " << odom_src.src_topic << " is beyond border (" << latest_odom.pose.pose.position.x - init_x << "m > " << max_x << "m) #^#");
             return false;
         }
         else if (latest_odom.pose.pose.position.y - init_y < min_y)
         {
             if (check_pass == true)
-                ROS_ERROR_STREAM("[Odom Fusion] Position from odometry " << odom_src.src_topic << " is beyond border (" << latest_odom.pose.pose.position.y - init_y << "m < " << min_y << "m) #^#");
+                ROS_ERROR_STREAM("[Odom Fusion] Position.y from odometry " << odom_src.src_topic << " is beyond border (" << latest_odom.pose.pose.position.y - init_y << "m < " << min_y << "m) #^#");
             return false;
         }
         else if (latest_odom.pose.pose.position.y - init_y > max_y)
         {
             if (check_pass == true)
-                ROS_ERROR_STREAM("[Odom Fusion] Position from odometry " << odom_src.src_topic << " is beyond border (" << latest_odom.pose.pose.position.y - init_y << "m > " << max_y << "m) #^#");
+                ROS_ERROR_STREAM("[Odom Fusion] Position.y from odometry " << odom_src.src_topic << " is beyond border (" << latest_odom.pose.pose.position.y - init_y << "m > " << max_y << "m) #^#");
             return false;
         }
         else if (latest_odom.pose.pose.position.z - init_z < min_z)
         {
             if (check_pass == true)
-                ROS_ERROR_STREAM("[Odom Fusion] Position from odometry " << odom_src.src_topic << " is beyond border (" << latest_odom.pose.pose.position.z - init_z << "m < " << min_z << "m) #^#");
+                ROS_ERROR_STREAM("[Odom Fusion] Position.z from odometry " << odom_src.src_topic << " is beyond border (" << latest_odom.pose.pose.position.z - init_z << "m < " << min_z << "m) #^#");
             return false;
         }
         else if (latest_odom.pose.pose.position.z - init_z > max_z)
         {
             if (check_pass == true)
-                ROS_ERROR_STREAM("[Odom Fusion] Position from odometry " << odom_src.src_topic << " is beyond border (" << latest_odom.pose.pose.position.z - init_z << "m > " << max_z << "m) #^#");
+                ROS_ERROR_STREAM("[Odom Fusion] Position.z from odometry " << odom_src.src_topic << " is beyond border (" << latest_odom.pose.pose.position.z - init_z << "m > " << max_z << "m) #^#");
             return false;
         }
         else
