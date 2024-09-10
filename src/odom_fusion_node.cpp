@@ -514,13 +514,15 @@ int main(int argc, char **argv)
                 calib_fcu_odom_thread = thread(
                     [&]()
                     {
-                        double z_avg = 0.0, yaw_avg = 0.0;
+                        double x_avg = 0.0, y_avg = 0.0, z_avg = 0.0, yaw_avg = 0.0;
                         ros::Rate calib_proc_rate(fcu_odom_src.src_freq);
                         double first_yaw = 0.0;
                         for (size_t i = 1; ros::ok(); i++)
                         {
                             // TODO: retrieve const ref not value
                             nav_msgs::Odometry latest_fcu_odom = fcu_odom_src.getLatestDataCopy();
+                            double x = latest_fcu_odom.pose.pose.position.x;
+                            double y = latest_fcu_odom.pose.pose.position.y;
                             double z = latest_fcu_odom.pose.pose.position.z;
                             Matrix3d R = Quaterniond(latest_fcu_odom.pose.pose.orientation.w,
                                                      latest_fcu_odom.pose.pose.orientation.x,
@@ -531,7 +533,7 @@ int main(int argc, char **argv)
 
                             if (i != 1)
                             {
-                                if (abs(z - z_avg) > 0.013 || abs(yaw - yaw_avg) > 0.013)
+                                if (abs(x - x_avg) > 0.013 || abs(y - y_avg) > 0.013 || abs(z - z_avg) > 0.013 || abs(yaw - yaw_avg) > 0.013)
                                 {
                                     state = FsmState::WAIT_FOR_FCU_ODOM;
                                     ROS_ERROR_STREAM("[Odom Fusion] \033[43;30mCALIB_FCU_ODOM\033[0m --> \033[43;30mWAIT_FOR_FCU_ODOM\033[0m Unstable initial z or yaw bias of fcu odometry, calibration restarted #^#");
@@ -552,14 +554,16 @@ int main(int argc, char **argv)
                                 }
                             }
 
+                            x_avg += (x - x_avg) / i;
+                            y_avg += (y - y_avg) / i;
                             z_avg += (z - z_avg) / i;
                             yaw_avg += (yaw - yaw_avg) / i;
 
                             if (i > 77) // or 250 or 520 or 1314
                             {
-                                p_fcu_bias << 0.0, 0.0, z_avg;
+                                p_fcu_bias << x_avg, y_avg, z_avg;
                                 q_fcu_bias = Quaterniond(AngleAxisd(yaw_avg, Vector3d::UnitZ()));
-                                ROS_INFO_STREAM("[Odom Fusion] \033[32mCalibration finished \\^_^/ bias z = " << z_avg << "m, yaw = " << yaw_avg << "rad");
+                                ROS_INFO_STREAM("[Odom Fusion] \033[32mCalibration finished \\^_^/ bias x = " << x_avg << "m, bias y = " << y_avg << "m, bias z = " << z_avg << "m, yaw = " << yaw_avg << "rad");
 
                                 state = FsmState::TAKEOFF;
                                 ROS_INFO_STREAM("[Odom Fusion] \033[43;30mCALIB_FCU_ODOM\033[0m --> \033[43;30mTAKEOFF\033[0m :)");
