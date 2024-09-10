@@ -478,9 +478,15 @@ int main(int argc, char **argv)
         last_odom_z = odom_output.pose.pose.position.z;
     };
 
-    auto changeFrameID = [&](nav_msgs::Odometry &odom_output, string frame_id = "world")
+    int self_id = -1;
+    if (getenv("DRONE_ID") != nullptr)
+        self_id = atoi(getenv("DRONE_ID"));
+    else
+        ROS_WARN("[Odom Fusion] DRONE_ID is not found in env var #^#");
+    auto changeHeader = [&](nav_msgs::Odometry &odom_output)
     {
-        odom_output.header.frame_id = frame_id;
+        odom_output.child_frame_id = "drone_" + to_string(self_id);
+        odom_output.header.frame_id = "world";
     };
     ros::Rate odom_output_rate(fcu_odom_src.src_freq); // Fcu odometry is used first during takeoff
     ros::Publisher odom_output_pub = nh.advertise<nav_msgs::Odometry>((string)param["odom_output_topic"], 100);
@@ -601,7 +607,7 @@ int main(int argc, char **argv)
                                 applySmoother(latest_vins_odom);
 
                                 useZFromRng(latest_vins_odom);
-                                changeFrameID(latest_vins_odom);
+                                changeHeader(latest_vins_odom);
                                 odom_output_pub.publish(latest_vins_odom);
                                 break;
                             }
@@ -613,7 +619,7 @@ int main(int argc, char **argv)
                                 applySmoother(latest_msckf_odom);
 
                                 useZFromRng(latest_msckf_odom);
-                                changeFrameID(latest_msckf_odom);
+                                changeHeader(latest_msckf_odom);
                                 odom_output_pub.publish(latest_msckf_odom);
                                 break;
                             }
@@ -629,7 +635,7 @@ int main(int argc, char **argv)
                                 toWorldVel(latest_fcu_odom_debiased);
 
                                 useZFromRng(latest_fcu_odom_debiased);
-                                changeFrameID(latest_fcu_odom_debiased);
+                                changeHeader(latest_fcu_odom_debiased);
                                 odom_output_pub.publish(latest_fcu_odom_debiased);
                                 break;
                             }
@@ -651,9 +657,12 @@ int main(int argc, char **argv)
                     {
                         while (ros::ok())
                         {
-                            if ((allow_high_altitude_flight ? true : optflow_conservative_hgt_check.isPassed()) &&
-                                vins_odom_src.isStarted() && isVinsCheckPassed() &&
-                                !allow_px4ctrl_cmd_ctrl)
+                            bool safe_to_enable_cmd_ctrl =
+                                (allow_high_altitude_flight ? true : optflow_conservative_hgt_check.isPassed()) &&
+                                ((vins_odom_src.isStarted() && isVinsCheckPassed()) ||
+                                 (msckf_odom_src.isStarted() && isMsckfCheckPassed()));
+
+                            if (safe_to_enable_cmd_ctrl && !allow_px4ctrl_cmd_ctrl)
                             {
                                 std_srvs::SetBool allow;
                                 allow.request.data = true;
@@ -661,9 +670,7 @@ int main(int argc, char **argv)
                                 allow_px4ctrl_cmd_ctrl = true;
                                 ROS_INFO("[Odom Fusion] \033[32mVins ready and flight altitude safe !!! Allow command control ^_^");
                             }
-                            else if (!((allow_high_altitude_flight ? true : optflow_conservative_hgt_check.isPassed()) &&
-                                       vins_odom_src.isStarted() && isVinsCheckPassed()) &&
-                                     allow_px4ctrl_cmd_ctrl)
+                            else if (!safe_to_enable_cmd_ctrl && allow_px4ctrl_cmd_ctrl)
                             {
                                 std_srvs::SetBool disallow;
                                 disallow.request.data = false;
@@ -694,8 +701,7 @@ int main(int argc, char **argv)
                     ROS_ERROR("[Odom Fusion] Exceptions in fcu odometry (probably no optical flow or flying too high on takeoff) !!! Takeoff with vins instead #^#");
                     inform_bad_odom = true;
                 }
-                // else if (msckf_odom_src.isAvailable())
-                else if (0)
+                else if (msckf_odom_src.isAvailable())
                 {
                     nav_msgs::Odometry latest_fcu_odom = fcu_odom_src.getLatestDataCopy();
                     nav_msgs::Odometry latest_fcu_odom_debiased;
@@ -727,8 +733,7 @@ int main(int argc, char **argv)
             // Try to switch to another odometer when there are exceptions in the current odometer
             if (!isVinsCheckPassed())
             {
-                // if (msckf_odom_src.isAvailable())
-                if (0)
+                if (msckf_odom_src.isAvailable())
                 {
                     nav_msgs::Odometry latest_vins_odom = vins_odom_src.getLatestDataCopy();
 
@@ -835,8 +840,7 @@ int main(int argc, char **argv)
                 ROS_INFO_STREAM("[Odom Fusion] Vins is availble while flying with fcu odometry \033[43;30mFLY_WITH_FCU_ODOM\033[0m --> \033[43;30mFLY_WITH_VINS\033[0m :)");
                 inform_bad_odom = true;
             }
-            // else if (msckf_odom_src.isAvailable())
-            else if (0)
+            else if (msckf_odom_src.isAvailable())
             {
                 nav_msgs::Odometry latest_fcu_odom = fcu_odom_src.getLatestDataCopy();
                 nav_msgs::Odometry latest_fcu_odom_debiased;
