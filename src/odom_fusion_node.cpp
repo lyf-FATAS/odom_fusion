@@ -9,9 +9,9 @@
 #include "DataSrc.hpp"
 #include "PosMagCheck.hpp"
 #include "VelMagCheck.hpp"
-#include "OptFlowHgtCheck.hpp"
+#include "ToFHgtCheck.hpp"
 #include "PosContinuityCheck.hpp"
-#include "OptFlowContinuityCheck.hpp"
+#include "ToFContinuityCheck.hpp"
 
 #include "traj_utils/take_off.h"
 #include "quadrotor_msgs/TakeoffLand.h"
@@ -19,8 +19,6 @@
 #include <mavros_msgs/OpticalFlowRad.h>
 #include <std_srvs/Trigger.h>
 #include <std_srvs/SetBool.h>
-
-#include "FyLogger.hpp"
 
 using namespace std;
 using namespace Eigen;
@@ -37,8 +35,6 @@ enum FsmState
 
 int main(int argc, char **argv)
 {
-    // fy_series::FyLogger::SEND_INFO("example_package", "123");
-
     ros::init(argc, argv, "odom_fusion_node");
     ros::NodeHandle nh("~");
 
@@ -61,13 +57,12 @@ int main(int argc, char **argv)
         init_x = init_y = init_z = 0.0;
 
     DataSrc<sensor_msgs::Imu> imu_src(nh, param["imu_topic"], param["imu_freq"]);
-    DataSrc<mavros_msgs::OpticalFlowRad> optical_flow_src(nh, param["optical_flow_topic"], param["optical_flow_freq"], param["optical_flow_timeout"]);
+    DataSrc<mavros_msgs::OpticalFlowRad> tof_src(nh, param["tof_topic"], param["tof_freq"], param["tof_timeout"]);
 
     ros::AsyncSpinner spinner(10); // 2 callbacks per data source
     spinner.start();
 
     //************* Data checks *************//
-    // Position magnitude check
     PosMagCheck vins_takeoff_pos_mag_check(vins_odom_src, param["pos_mag_check_freq"],
                                            param["min_x_takeoff"], param["max_x_takeoff"],
                                            param["min_y_takeoff"], param["max_y_takeoff"],
@@ -100,19 +95,17 @@ int main(int argc, char **argv)
                                        param["min_z"], param["max_z_fcu_odom"],
                                        0.0, 0.0, 0.0);
 
-    OptFlowHgtCheck optflow_conservative_hgt_check(optical_flow_src, param["optflow_conservative_hgt_check_freq"], param["max_conservative_hgt"]);
-    OptFlowHgtCheck optflow_hgt_check(optical_flow_src, param["optflow_hgt_check_freq"], param["max_hgt"]);
+    ToFHgtCheck tof_conservative_hgt_check(tof_src, param["tof_conservative_hgt_check_freq"], param["max_conservative_hgt"]);
+    ToFHgtCheck tof_hgt_check(tof_src, param["tof_hgt_check_freq"], param["max_hgt"]);
 
-    // Velocity magnitude check
     VelMagCheck vins_vel_mag_check(vins_odom_src, param["vel_mag_check_freq"], param["max_vel"]);
     VelMagCheck msckf_vel_mag_check(msckf_odom_src, param["vel_mag_check_freq"], param["max_vel"]);
     VelMagCheck fcu_odom_vel_mag_check(fcu_odom_src, param["vel_mag_check_freq"], param["max_vel"]);
 
-    // Position continuity check
     PosContinuityCheck vins_pos_continuity_check(vins_odom_src, param["continuity_check_freq"], param["pos_max_jump"], param["pos_jump_cooling_time"]);
     PosContinuityCheck msckf_pos_continuity_check(msckf_odom_src, param["continuity_check_freq"], param["pos_max_jump"], param["pos_jump_cooling_time"]);
     PosContinuityCheck fcu_odom_pos_continuity_check(fcu_odom_src, param["continuity_check_freq"], param["pos_max_jump"], param["pos_jump_cooling_time"]);
-    OptFlowContinuityCheck optflow_continuity_check(optical_flow_src, param["continuity_check_freq"], param["optflow_max_jump"], param["optflow_jump_cooling_time"]);
+    ToFContinuityCheck tof_continuity_check(tof_src, param["continuity_check_freq"], param["tof_max_jump"], param["tof_jump_cooling_time"]);
 
     // Fcu odometer is unreliable until the propeller is spinned
     fcu_odom_takeoff_pos_mag_check.stopCheck();
@@ -138,13 +131,13 @@ int main(int argc, char **argv)
     auto isFcuOdomCheckPassed = [&]()
     {
         return fcu_odom_src.isStable() &&
-               optical_flow_src.isStable() &&
-               optflow_hgt_check.isPassed() &&
-               optflow_continuity_check.isPassed() &&
+               tof_src.isStable() &&
                fcu_odom_takeoff_pos_mag_check.isPassed() &&
                fcu_odom_pos_mag_check.isPassed() &&
                fcu_odom_vel_mag_check.isPassed() &&
-               fcu_odom_pos_continuity_check.isPassed();
+               fcu_odom_pos_continuity_check.isPassed() &&
+               tof_hgt_check.isPassed() &&
+               tof_continuity_check.isPassed();
     };
 
     //************* Main loop *************//
@@ -152,7 +145,7 @@ int main(int argc, char **argv)
     const double data_check_freq = max({10.0, (double)param["pos_mag_check_freq"], (double)param["vel_mag_check_freq"]});
     ros::Rate data_check_rate(data_check_freq);
 
-    // Calibrate initial z and yaw bias of the fcu odometry for takeoff
+    // Calibrate initial position and yaw bias of the fcu odometry for takeoff
     // Note that these static biases may only be used during takeoff and can become dynamic during flight
     thread calib_fcu_odom_thread;
     Vector3d p_fcu_bias;
@@ -188,7 +181,7 @@ int main(int argc, char **argv)
     };
 
     ros::Subscriber takeoff_signal_sub_0 =
-        nh.subscribe<traj_utils::take_off>((string)param["takeoff_signal_topic_0"], 10,
+        nh.subscribe<traj_utils::take_off>(param["takeoff_signal_topic_0"], 10,
                                            [&](const traj_utils::take_off::ConstPtr &signal)
                                            {
                                                switch (state)
@@ -224,7 +217,7 @@ int main(int argc, char **argv)
                                            });
 
     ros::Subscriber takeoff_signal_sub_1 =
-        nh.subscribe<quadrotor_msgs::TakeoffLand>((string)param["takeoff_signal_topic_1"], 10,
+        nh.subscribe<quadrotor_msgs::TakeoffLand>(param["takeoff_signal_topic_1"], 10,
                                                   [&](const quadrotor_msgs::TakeoffLand::ConstPtr &signal)
                                                   {
                                                       switch (state)
@@ -273,7 +266,7 @@ int main(int argc, char **argv)
     };
 
     ros::Subscriber hover_signal_sub =
-        nh.subscribe<geometry_msgs::PoseStamped>((string)param["hover_signal_topic"], 10,
+        nh.subscribe<geometry_msgs::PoseStamped>(param["hover_signal_topic"], 10,
                                                  [&](const geometry_msgs::PoseStamped::ConstPtr &signal)
                                                  {
                                                      switch (state)
@@ -289,10 +282,6 @@ int main(int argc, char **argv)
                                                          vins_takeoff_pos_mag_check.stopCheck();
                                                          msckf_takeoff_pos_mag_check.stopCheck();
                                                          fcu_odom_takeoff_pos_mag_check.stopCheck();
-
-                                                         //  ROS_INFO("[Odom Fusion] \033[32mRestarting vins odometry ...");
-                                                         //  vins_odom_src.setUnavailable();
-                                                         //  restartOdom(vins_restart_pub, vins_odom_src);
 
                                                          state = FsmState::FLY_WITH_FCU_ODOM;
                                                          ROS_INFO("[Odom Fusion] \033[32mTakeoff done ^v^");
@@ -365,39 +354,6 @@ int main(int argc, char **argv)
             }
         });
 
-    // auto toBodyVel = [&](nav_msgs::Odometry &odom)
-    // {
-    //     Quaterniond q_b2w(odom.pose.pose.orientation.w,
-    //                       odom.pose.pose.orientation.x,
-    //                       odom.pose.pose.orientation.y,
-    //                       odom.pose.pose.orientation.z);
-
-    //     Vector3d v_world(odom.twist.twist.linear.x,
-    //                      odom.twist.twist.linear.y,
-    //                      odom.twist.twist.linear.z);
-    //     Vector3d v_body = q_b2w.inverse() * v_world;
-
-    //     odom.twist.twist.linear.x = v_body.x();
-    //     odom.twist.twist.linear.y = v_body.y();
-    //     odom.twist.twist.linear.z = v_body.z();
-    // };
-    auto toWorldVel = [&](nav_msgs::Odometry &odom)
-    {
-        Quaterniond q_b2w(odom.pose.pose.orientation.w,
-                          odom.pose.pose.orientation.x,
-                          odom.pose.pose.orientation.y,
-                          odom.pose.pose.orientation.z);
-
-        Vector3d v_body(odom.twist.twist.linear.x,
-                        odom.twist.twist.linear.y,
-                        odom.twist.twist.linear.z);
-        Vector3d v_world = q_b2w * v_body;
-
-        odom.twist.twist.linear.x = v_world.x();
-        odom.twist.twist.linear.y = v_world.y();
-        odom.twist.twist.linear.z = v_world.z();
-    };
-
     thread odom_output_thread;
     Vector3d p_smoother_p(0.0, 0.0, 0.0);
     Quaterniond p_smoother_q(1.0, 0.0, 0.0, 0.0);
@@ -451,15 +407,32 @@ int main(int argc, char **argv)
         q_smoother = p_smoother_q;
         smoother_decay_timestep = 0;
     };
+    auto toWorldVel = [&](nav_msgs::Odometry &odom)
+    {
+        Quaterniond q_b2w(odom.pose.pose.orientation.w,
+                          odom.pose.pose.orientation.x,
+                          odom.pose.pose.orientation.y,
+                          odom.pose.pose.orientation.z);
 
-    bool first_use_rng_z = true;
-    bool last_rng_valid;
+        Vector3d v_body(odom.twist.twist.linear.x,
+                        odom.twist.twist.linear.y,
+                        odom.twist.twist.linear.z);
+        Vector3d v_world = q_b2w * v_body;
+
+        odom.twist.twist.linear.x = v_world.x();
+        odom.twist.twist.linear.y = v_world.y();
+        odom.twist.twist.linear.z = v_world.z();
+    };
+
+    bool use_z_from_tof = (int)param["use_z_from_tof"];
+    bool first_use_tof_z = true;
+    bool last_tof_valid;
     double last_odom_z;
     double delta_z = 0.0;
-    auto useZFromRng = [&](nav_msgs::Odometry &odom_output)
+    auto useZFromToF = [&](nav_msgs::Odometry &odom_output)
     {
-        bool rng_valid = fcu_odom_src.isStarted() && isFcuOdomCheckPassed() && optflow_conservative_hgt_check.isPassed();
-        if (rng_valid)
+        bool tof_valid = fcu_odom_src.isStarted() && isFcuOdomCheckPassed();
+        if (tof_valid)
         {
             nav_msgs::Odometry latest_fcu_odom = fcu_odom_src.getLatestDataCopy();
             nav_msgs::Odometry latest_fcu_odom_debiased;
@@ -467,16 +440,19 @@ int main(int argc, char **argv)
             odom_output.pose.pose.position.z = latest_fcu_odom_debiased.pose.pose.position.z;
         }
 
-        if (first_use_rng_z)
-            first_use_rng_z = false;
-        else if (rng_valid != last_rng_valid)
+        if (first_use_tof_z)
+            first_use_tof_z = false;
+        else if (tof_valid != last_tof_valid)
             delta_z = last_odom_z - odom_output.pose.pose.position.z;
 
         odom_output.pose.pose.position.z += delta_z;
 
-        last_rng_valid = rng_valid;
+        last_tof_valid = tof_valid;
         last_odom_z = odom_output.pose.pose.position.z;
     };
+
+    // bool est_z_from_lidar_map = (int)param["est_z_from_lidar_map"];
+    // string revised_odom_topic = param["revised_odom_topic"];
 
     int self_id = -1;
     if (getenv("DRONE_ID") != nullptr)
@@ -489,14 +465,14 @@ int main(int argc, char **argv)
         odom_output.header.frame_id = "world";
     };
     ros::Rate odom_output_rate(fcu_odom_src.src_freq); // Fcu odometry is used first during takeoff
-    ros::Publisher odom_output_pub = nh.advertise<nav_msgs::Odometry>((string)param["odom_output_topic"], 100);
+    ros::Publisher odom_output_pub = nh.advertise<nav_msgs::Odometry>(param["odom_output_topic"], 100);
 
     thread commu_with_px4ctrl_thread;
     ros::Rate commu_with_px4ctrl_rate(data_check_freq);
     bool allow_high_altitude_flight;
     param["allow_high_altitude_flight"] >> allow_high_altitude_flight;
     bool allow_px4ctrl_cmd_ctrl = true;
-    ros::ServiceClient set_cmd_ctrl_permission_srv = nh.serviceClient<std_srvs::SetBool>((string)param["set_px4ctrl_cmd_ctrl_permission_service"]);
+    ros::ServiceClient set_cmd_ctrl_permission_srv = nh.serviceClient<std_srvs::SetBool>(param["set_px4ctrl_cmd_ctrl_permission_service"]);
 
     while (ros::ok())
     {
@@ -505,7 +481,7 @@ int main(int argc, char **argv)
         {
         case FsmState::WAIT_FOR_FCU_ODOM:
         {
-            if (fcu_odom_src.isStarted() && optical_flow_src.isStarted())
+            if (fcu_odom_src.isStarted() && tof_src.isStarted())
             {
                 state = FsmState::CALIB_FCU_ODOM;
                 // FIXME: use GLOG please 😣😣😣
@@ -606,7 +582,9 @@ int main(int argc, char **argv)
 
                                 applySmoother(latest_vins_odom);
 
-                                useZFromRng(latest_vins_odom);
+                                if (use_z_from_tof)
+                                    useZFromToF(latest_vins_odom);
+
                                 changeHeader(latest_vins_odom);
                                 odom_output_pub.publish(latest_vins_odom);
                                 break;
@@ -618,7 +596,9 @@ int main(int argc, char **argv)
 
                                 applySmoother(latest_msckf_odom);
 
-                                useZFromRng(latest_msckf_odom);
+                                if (use_z_from_tof)
+                                    useZFromToF(latest_msckf_odom);
+
                                 changeHeader(latest_msckf_odom);
                                 odom_output_pub.publish(latest_msckf_odom);
                                 break;
@@ -634,7 +614,9 @@ int main(int argc, char **argv)
                                 applySmoother(latest_fcu_odom_debiased);
                                 toWorldVel(latest_fcu_odom_debiased);
 
-                                useZFromRng(latest_fcu_odom_debiased);
+                                if (use_z_from_tof)
+                                    useZFromToF(latest_fcu_odom_debiased);
+
                                 changeHeader(latest_fcu_odom_debiased);
                                 odom_output_pub.publish(latest_fcu_odom_debiased);
                                 break;
@@ -658,7 +640,7 @@ int main(int argc, char **argv)
                         while (ros::ok())
                         {
                             bool safe_to_enable_cmd_ctrl =
-                                (allow_high_altitude_flight ? true : optflow_conservative_hgt_check.isPassed()) &&
+                                (allow_high_altitude_flight ? true : tof_conservative_hgt_check.isPassed()) &&
                                 ((vins_odom_src.isStarted() && isVinsCheckPassed()) ||
                                  (msckf_odom_src.isStarted() && isMsckfCheckPassed()));
 

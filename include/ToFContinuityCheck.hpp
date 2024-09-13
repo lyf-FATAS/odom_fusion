@@ -8,10 +8,10 @@
 
 using namespace std;
 
-class OptFlowContinuityCheck : public DataCheck<mavros_msgs::OpticalFlowRad>
+class ToFContinuityCheck : public DataCheck<mavros_msgs::OpticalFlowRad>
 {
 public:
-    OptFlowContinuityCheck(DataSrc<mavros_msgs::OpticalFlowRad> &data_src_, double check_freq_, double max_jump_, double cooling_time_)
+    ToFContinuityCheck(DataSrc<mavros_msgs::OpticalFlowRad> &data_src_, double check_freq_, double max_jump_, double cooling_time_)
         : DataCheck<mavros_msgs::OpticalFlowRad>(check_freq_, data_src_), max_jump(max_jump_), cooling_time(cooling_time_), unstable(false)
     {
         auto &[of_src] = data_src;

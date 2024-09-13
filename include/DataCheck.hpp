@@ -27,7 +27,7 @@ public:
                 enable_check)
             {
                 if (apply([](const auto &...src)
-                          { return (src.stable_stream && ...); },
+                          { return (src.isStable() && ...); },
                           data_src))
                 {
                     check_pass = processData();

@@ -8,10 +8,10 @@
 
 using namespace std;
 
-class OptFlowHgtCheck : public DataCheck<mavros_msgs::OpticalFlowRad>
+class ToFHgtCheck : public DataCheck<mavros_msgs::OpticalFlowRad>
 {
 public:
-    OptFlowHgtCheck(DataSrc<mavros_msgs::OpticalFlowRad> &data_src_, double check_freq_, double max_hgt_)
+    ToFHgtCheck(DataSrc<mavros_msgs::OpticalFlowRad> &data_src_, double check_freq_, double max_hgt_)
         : DataCheck<mavros_msgs::OpticalFlowRad>(check_freq_, data_src_), max_hgt(max_hgt_)
     {
         auto &[of_src] = data_src;
