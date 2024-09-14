@@ -468,7 +468,7 @@ int main(int argc, char **argv)
         odom_output.child_frame_id = "drone_" + to_string(self_id);
         odom_output.header.frame_id = "world";
     };
-    ros::Rate odom_output_rate(fcu_odom_src.src_freq); // Fcu odometry is used first during takeoff
+    ros::Rate odom_output_rate(vins_odom_src.src_freq); // Vins is used first during takeoff
     ros::Publisher odom_output_pub = nh.advertise<nav_msgs::Odometry>(param["odom_output_topic"], 100);
 
     thread commu_with_px4ctrl_thread;
@@ -551,6 +551,16 @@ int main(int argc, char **argv)
                                 q_fcu_bias = Quaterniond(AngleAxisd(yaw_avg, Vector3d::UnitZ()));
                                 ROS_INFO_STREAM("[Odom Fusion] \033[32mCalibration finished \\^_^/ bias x = " << x_avg << "m, bias y = " << y_avg << "m, bias z = " << z_avg << "m, yaw = " << yaw_avg << "rad");
 
+                                bool inform_waiting_for_vins = true;
+                                while (!vins_odom_src.isAvailable() && ros::ok())
+                                {
+                                    if (inform_waiting_for_vins)
+                                    {
+                                        ROS_INFO_STREAM("[Odom Fusion] Waiting for vins ...");
+                                        inform_waiting_for_vins = false;
+                                    }
+                                    this_thread::sleep_for(chrono::milliseconds(500));
+                                }
                                 state = FsmState::TAKEOFF;
                                 ROS_INFO_STREAM("[Odom Fusion] \033[43;30mCALIB_FCU_ODOM\033[0m --> \033[43;30mTAKEOFF\033[0m :)");
                                 break;

@@ -108,7 +108,7 @@ public:
     inline T getLatestDataCopy() // TODO: + const and return ref
     {
         if (!recv_first_msg)
-            ROS_ERROR("[Odom Fusion] Unable to retrieve data, buffer is empty and the program should be dead ... Please contact LAJi_lyf: 13322809634, this is a class design issue #^#");
+            ROS_ERROR("[Odom Fusion] Unable to retrieve data, buffer is empty and the program should be dead ... This is a class design issue #^# Currently, you have to make sure that there is already data in the buffer before accessing it 🤧🤧🤧");
         lock_guard<mutex> lock(src_mutex);
         return data_buf.back();
     }
@@ -116,7 +116,7 @@ public:
     inline T getPenultimateCopy(int i)
     {
         if (!recv_first_msg)
-            ROS_ERROR("[Odom Fusion] Unable to retrieve data, buffer is empty and the program should be dead ... Please contact LAJi_lyf: 13322809634, this is a class design issue #^#");
+            ROS_ERROR("[Odom Fusion] Unable to retrieve data, buffer is empty and the program should be dead ... This is a class design issue #^# Currently, you have to make sure that there is already data in the buffer before accessing it 🤧🤧🤧");
         lock_guard<mutex> lock(src_mutex);
         return data_buf[data_buf.size() - 1 - i];
     }
