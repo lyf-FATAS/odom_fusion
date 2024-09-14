@@ -82,3 +82,6 @@ allow_high_altitude_flight: 0
 set_px4ctrl_cmd_ctrl_permission_service: "/px4ctrl/set_cmd_ctrl_permission"
 
 # revised_odom_topic: "/relative_loc/revised_odom"
+
+smoother_decay_const_p: 0.005
+smoother_decay_const_yaw: 0.05

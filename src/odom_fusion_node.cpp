@@ -358,7 +358,8 @@ int main(int argc, char **argv)
     Vector3d p_smoother_p(0.0, 0.0, 0.0);
     Quaterniond p_smoother_q(1.0, 0.0, 0.0, 0.0);
     Quaterniond q_smoother(1.0, 0.0, 0.0, 0.0);
-    const double smoother_decay_const = 0.001;
+    double smoother_decay_const_p = param["smoother_decay_const_p"];
+    double smoother_decay_const_yaw = param["smoother_decay_const_yaw"];
     int smoother_decay_timestep = 0;
     auto applySmoother = [&](nav_msgs::Odometry &odom_output)
     {
@@ -370,9 +371,9 @@ int main(int argc, char **argv)
                       odom_output.pose.pose.orientation.y,
                       odom_output.pose.pose.orientation.z);
 
-        Vector3d p_smoothed = p_smoother_q.slerp(1 - exp(-smoother_decay_const * smoother_decay_timestep), Quaterniond(1.0, 0.0, 0.0, 0.0)) * p +
-                              exp(-smoother_decay_const * smoother_decay_timestep) * p_smoother_p;
-        Quaterniond q_smoothed = q_smoother.slerp(1 - exp(-smoother_decay_const * smoother_decay_timestep), Quaterniond(1.0, 0.0, 0.0, 0.0)) * q;
+        Vector3d p_smoothed = p_smoother_q.slerp(1 - exp(-smoother_decay_const_p * smoother_decay_timestep), Quaterniond::Identity()) * p +
+                              exp(-smoother_decay_const_p * smoother_decay_timestep) * p_smoother_p;
+        Quaterniond q_smoothed = q_smoother.slerp(1 - exp(-smoother_decay_const_yaw * smoother_decay_timestep), Quaterniond::Identity()) * q;
         smoother_decay_timestep++;
 
         odom_output.pose.pose.position.x = p_smoothed.x();
@@ -402,7 +403,10 @@ int main(int argc, char **argv)
                                 odom_fut.pose.pose.orientation.y,
                                 odom_fut.pose.pose.orientation.z);
 
-        p_smoother_q = q_prv * q_fut.inverse();
+        Matrix3d R_diff = (q_prv * q_fut.inverse()).toRotationMatrix();
+        double yaw_diff = atan2(R_diff(1, 0), R_diff(0, 0));
+        p_smoother_q = AngleAxisd(yaw_diff, Vector3d::UnitZ());
+
         p_smoother_p = p_prv - p_smoother_q * p_fut;
         q_smoother = p_smoother_q;
         smoother_decay_timestep = 0;
