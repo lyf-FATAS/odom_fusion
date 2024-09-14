@@ -283,7 +283,7 @@ int main(int argc, char **argv)
                                                      }
                                                      case FsmState::TAKEOFF:
                                                      {
-                                                         state = FsmState::FLY_WITH_FCU_ODOM;
+                                                         state = FsmState::FLY_WITH_VINS;
                                                          ROS_INFO("[Odom Fusion] \033[32mTakeoff done ^v^");
                                                          break;
                                                      }
@@ -309,7 +309,7 @@ int main(int argc, char **argv)
         {
             while (ros::ok())
             {
-                if (state != FsmState::FLY_WITH_VINS &&
+                if (state != FsmState::FLY_WITH_VINS && state != FsmState::TAKEOFF &&
                     vins_odom_src.isStarted() && // If the data source never starts at program startup, or midway through after sending the restart signal, the program will be helpless 😥😥😥
                     !isVinsCheckPassed() && vins_odom_src.isAvailable())
                 {
@@ -337,7 +337,7 @@ int main(int argc, char **argv)
                     msckf_odom_src.setAvailable();
                 }
 
-                if (state != FsmState::CALIB_FCU_ODOM && state != FsmState::TAKEOFF && state != FsmState::FLY_WITH_FCU_ODOM &&
+                if (state != FsmState::CALIB_FCU_ODOM && state != FsmState::FLY_WITH_FCU_ODOM &&
                     fcu_odom_src.isStarted() &&
                     !isFcuOdomCheckPassed() && fcu_odom_src.isAvailable())
                 {
@@ -576,6 +576,7 @@ int main(int argc, char **argv)
                         {
                             switch (state)
                             {
+                            case FsmState::TAKEOFF:
                             case FsmState::FLY_WITH_VINS:
                             {
                                 nav_msgs::Odometry latest_vins_odom = vins_odom_src.getLatestDataCopy();
@@ -604,7 +605,6 @@ int main(int argc, char **argv)
                                 break;
                             }
 
-                            case FsmState::TAKEOFF:
                             case FsmState::FLY_WITH_FCU_ODOM:
                             {
                                 nav_msgs::Odometry latest_fcu_odom = fcu_odom_src.getLatestDataCopy();
@@ -666,43 +666,41 @@ int main(int argc, char **argv)
                     });
 
             // Try to switch to another odometer when there are exceptions in the current odometer
-            if (!isFcuOdomCheckPassed())
+            if (!isVinsCheckPassed())
             {
-                if (vins_odom_src.isAvailable())
+                if (msckf_odom_src.isAvailable())
                 {
-                    nav_msgs::Odometry latest_fcu_odom = fcu_odom_src.getLatestDataCopy();
-                    nav_msgs::Odometry latest_fcu_odom_debiased;
-                    debiasFcuOdom(latest_fcu_odom, latest_fcu_odom_debiased);
-
                     nav_msgs::Odometry latest_vins_odom = vins_odom_src.getLatestDataCopy();
-
-                    generateSmoother(latest_fcu_odom_debiased, latest_vins_odom);
-
-                    odom_output_rate = ros::Rate(vins_odom_src.src_freq);
-                    state = FsmState::FLY_WITH_VINS;
-                    ROS_ERROR("[Odom Fusion] Exceptions in fcu odometry (probably no optical flow or flying too high on takeoff) !!! Takeoff with vins instead #^#");
-                    inform_bad_odom = true;
-                }
-                else if (msckf_odom_src.isAvailable())
-                {
-                    nav_msgs::Odometry latest_fcu_odom = fcu_odom_src.getLatestDataCopy();
-                    nav_msgs::Odometry latest_fcu_odom_debiased;
-                    debiasFcuOdom(latest_fcu_odom, latest_fcu_odom_debiased);
 
                     nav_msgs::Odometry latest_msckf_odom = msckf_odom_src.getLatestDataCopy();
 
-                    generateSmoother(latest_fcu_odom_debiased, latest_msckf_odom);
+                    generateSmoother(latest_vins_odom, latest_msckf_odom);
 
                     odom_output_rate = ros::Rate(msckf_odom_src.src_freq);
                     state = FsmState::FLY_WITH_MSCKF;
-                    ROS_ERROR("[Odom Fusion] Exceptions in fcu odometry (probably no optical flow or flying too high on takeoff) but unavailble vins !!! Takeoff with msckf instead #^#");
+                    ROS_ERROR("[Odom Fusion] Exceptions in vins odometry !!! Fly with msckf instead #^#");
+                    inform_bad_odom = true;
+                }
+                else if (fcu_odom_src.isAvailable())
+                {
+                    nav_msgs::Odometry latest_vins_odom = vins_odom_src.getLatestDataCopy();
+
+                    nav_msgs::Odometry latest_fcu_odom = fcu_odom_src.getLatestDataCopy();
+                    nav_msgs::Odometry latest_fcu_odom_debiased;
+                    debiasFcuOdom(latest_fcu_odom, latest_fcu_odom_debiased);
+
+                    generateSmoother(latest_vins_odom, latest_fcu_odom_debiased);
+
+                    odom_output_rate = ros::Rate(fcu_odom_src.src_freq);
+                    state = FsmState::FLY_WITH_FCU_ODOM;
+                    ROS_ERROR("[Odom Fusion] Exceptions in vins odometry but unavailble msckf !!! Fly with fcu odometry instead #^#");
                     inform_bad_odom = true;
                 }
                 else
                 {
                     if (inform_bad_odom)
                     {
-                        ROS_ERROR("[Odom Fusion] Exceptions in fcu odometry (probably no optical flow or flying too high on takeoff) but unavailble vins and msckf !!! Continue to takeoff with fcu odometry #~# Watch out for crash !!!");
+                        ROS_ERROR("[Odom Fusion] Exceptions in vins odometry but unavailble msckf and fcu odometry !!! Continue flying with vins #~# Watch out for crash !!!");
                         inform_bad_odom = false;
                     }
                 }
