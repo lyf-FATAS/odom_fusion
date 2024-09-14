@@ -16,7 +16,7 @@ msckf_odom_timeout: 0.1
 # Data src 2
 fcu_odom_topic: "/mavros/local_position/odom"
 fcu_odom_freq: 100.0
-# fcu_odom_timeout: 0.15
+fcu_odom_timeout: 0.1
 
 # Data src 3
 imu_topic: "/mavros/imu/data"

@@ -44,7 +44,7 @@ int main(int argc, char **argv)
     //************* Data sources *************//
     DataSrc<nav_msgs::Odometry> vins_odom_src(nh, param["vins_odom_topic"], param["vins_odom_freq"], param["vins_odom_timeout"]);
     DataSrc<nav_msgs::Odometry> msckf_odom_src(nh, param["msckf_odom_topic"], param["msckf_odom_freq"], param["msckf_odom_timeout"]);
-    DataSrc<nav_msgs::Odometry> fcu_odom_src(nh, param["fcu_odom_topic"], param["fcu_odom_freq"]);
+    DataSrc<nav_msgs::Odometry> fcu_odom_src(nh, param["fcu_odom_topic"], param["fcu_odom_freq"], param["fcu_odom_timeout"]);
 
     double init_x, init_y, init_z;
     if (getenv("ipx") != nullptr && getenv("ipy") != nullptr && getenv("ipz") != nullptr)
@@ -269,6 +269,10 @@ int main(int argc, char **argv)
         nh.subscribe<geometry_msgs::PoseStamped>(param["hover_signal_topic"], 10,
                                                  [&](const geometry_msgs::PoseStamped::ConstPtr &signal)
                                                  {
+                                                     vins_takeoff_pos_mag_check.stopCheck();
+                                                     msckf_takeoff_pos_mag_check.stopCheck();
+                                                     fcu_odom_takeoff_pos_mag_check.stopCheck();
+
                                                      switch (state)
                                                      {
                                                      case FsmState::WAIT_FOR_FCU_ODOM:
@@ -279,10 +283,6 @@ int main(int argc, char **argv)
                                                      }
                                                      case FsmState::TAKEOFF:
                                                      {
-                                                         vins_takeoff_pos_mag_check.stopCheck();
-                                                         msckf_takeoff_pos_mag_check.stopCheck();
-                                                         fcu_odom_takeoff_pos_mag_check.stopCheck();
-
                                                          state = FsmState::FLY_WITH_FCU_ODOM;
                                                          ROS_INFO("[Odom Fusion] \033[32mTakeoff done ^v^");
                                                          break;
