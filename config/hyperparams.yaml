@@ -1,7 +1,10 @@
 %YAML:1.0
 
-use_z_from_tof: 1
-# est_z_from_lidar_map: 1
+Z_mode: 2  # 0: z from vio  1: z from ToF  2: estimate z from lidar map
+est_z_rate: 2.0
+kdtree_search_radius: 1.0
+cutoff_frequency_z: 1.0
+max_delta_z: 0.05
 
 # Data src 0
 vins_odom_topic: "/vins_estimator/imu_propagate"
@@ -29,7 +32,7 @@ tof_freq: 10.0
 tof_timeout: 0.2
 
 # Check 0: position magnitude check
-pos_mag_check_freq: 10.0
+pos_mag_check_freq: 3.0
 min_x_takeoff: -2.5
 max_x_takeoff:  2.5
 min_y_takeoff: -2.5
@@ -42,7 +45,7 @@ max_x:  100.0
 min_y: -100.0
 max_y:  100.0
 min_z: -0.5
-max_z:  4.0
+max_z:  3.0
 max_z_fcu_odom:  2.333
 
 # Check 1: tof height check
@@ -53,20 +56,20 @@ tof_hgt_check_freq: 10.0
 max_hgt: 2.4
 
 # Check 2: velocity magnitude check
-vel_mag_check_freq: 10.0
+vel_mag_check_freq: 3.0
 max_vel: 5.2
 
 # Check 3: continuity check
-continuity_check_freq: 10.0
+continuity_check_freq: 20.0
 
-pos_max_jump: 0.52
-pos_jump_cooling_time: 0.2
+pos_max_jump: 0.520
+pos_jump_cooling_time: 0.250
 
-tof_max_jump: 0.23
-tof_jump_cooling_time: 3
+tof_max_jump: 0.1314
+tof_jump_cooling_time: 5.20
 
 # Check 4: imu amplitude check
-imu_amp_check_freq: 10.0
+imu_amp_check_freq: 3.0
 max_amp: 8.0 # -4.0 ~ +4.0
 
 takeoff_signal_topic_0: "/take_off_bace"
@@ -81,7 +84,7 @@ odom_output_topic: "odom"
 allow_high_altitude_flight: 0
 set_px4ctrl_cmd_ctrl_permission_service: "/px4ctrl/set_cmd_ctrl_permission"
 
-# revised_odom_topic: "/relative_loc/revised_odom"
+revised_odom_topic: "/relative_loc/revised_odom"
 
 smoother_decay_const_p: 0.005
 smoother_decay_const_yaw: 0.05

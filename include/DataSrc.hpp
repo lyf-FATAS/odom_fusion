@@ -1,7 +1,8 @@
 #pragma once
 
-#include <mutex>
+#include <atomic>
 #include <deque>
+#include <mutex>
 #include <string>
 #include <ros/ros.h>
 
@@ -127,15 +128,15 @@ public:
         return data_buf.size();
     }
 
-    bool src_available;
+    atomic<bool> src_available;
 
     string src_topic;
     double src_freq;
     double src_timeout;
     mutex src_mutex;
     deque<T> data_buf;
-    bool src_started;
-    bool stable_stream;
+    atomic<bool> src_started;
+    atomic<bool> stable_stream;
 
     ros::Subscriber data_sub;
     ros::Timer check_stream_stability_timer;

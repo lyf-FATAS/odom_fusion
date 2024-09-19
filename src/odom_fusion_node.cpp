@@ -1,5 +1,7 @@
+#include <atomic>
 #include <string>
 #include <thread>
+#include <mutex>
 #include <ros/ros.h>
 #include <nav_msgs/Odometry.h>
 #include <sensor_msgs/Imu.h>
@@ -20,8 +22,14 @@
 #include <std_srvs/Trigger.h>
 #include <std_srvs/SetBool.h>
 
+#include <pcl/io/pcd_io.h>
+#include <pcl/kdtree/kdtree_flann.h>
+#include <pcl/point_types.h>
+#include "LowPassFilter.hpp"
+
 using namespace std;
 using namespace Eigen;
+using namespace pcl;
 
 enum FsmState
 {
@@ -59,7 +67,7 @@ int main(int argc, char **argv)
     DataSrc<sensor_msgs::Imu> imu_src(nh, param["imu_topic"], param["imu_freq"]);
     DataSrc<mavros_msgs::OpticalFlowRad> tof_src(nh, param["tof_topic"], param["tof_freq"], param["tof_timeout"]);
 
-    ros::AsyncSpinner spinner(10); // 2 callbacks per data source
+    ros::AsyncSpinner spinner(10);
     spinner.start();
 
     //************* Data checks *************//
@@ -115,24 +123,20 @@ int main(int argc, char **argv)
 
     auto isVinsCheckPassed = [&]()
     {
-        return vins_odom_src.isStable() &&
-               vins_takeoff_pos_mag_check.isPassed() &&
+        return vins_takeoff_pos_mag_check.isPassed() &&
                vins_pos_mag_check.isPassed() &&
                vins_vel_mag_check.isPassed() &&
                vins_pos_continuity_check.isPassed();
     };
     auto isMsckfCheckPassed = [&]()
     {
-        return msckf_odom_src.isStable() &&
-               msckf_takeoff_pos_mag_check.isPassed() &&
+        return msckf_takeoff_pos_mag_check.isPassed() &&
                msckf_pos_mag_check.isPassed() &&
                msckf_vel_mag_check.isPassed();
     };
     auto isFcuOdomCheckPassed = [&]()
     {
-        return fcu_odom_src.isStable() &&
-               tof_src.isStable() &&
-               fcu_odom_takeoff_pos_mag_check.isPassed() &&
+        return fcu_odom_takeoff_pos_mag_check.isPassed() &&
                fcu_odom_pos_mag_check.isPassed() &&
                fcu_odom_vel_mag_check.isPassed() &&
                fcu_odom_pos_continuity_check.isPassed() &&
@@ -142,7 +146,13 @@ int main(int argc, char **argv)
 
     //************* Main loop *************//
     FsmState state(FsmState::WAIT_FOR_FCU_ODOM);
-    const double data_check_freq = max({10.0, (double)param["pos_mag_check_freq"], (double)param["vel_mag_check_freq"]});
+    const double data_check_freq = max({10.0,
+                                        (double)param["pos_mag_check_freq"],
+                                        (double)param["tof_conservative_hgt_check_freq"],
+                                        (double)param["tof_hgt_check_freq"],
+                                        (double)param["vel_mag_check_freq"],
+                                        (double)param["continuity_check_freq"],
+                                        (double)param["imu_amp_check_freq"]});
     ros::Rate data_check_rate(data_check_freq);
 
     // Calibrate initial position and yaw bias of the fcu odometry for takeoff
@@ -205,7 +215,7 @@ int main(int argc, char **argv)
                                                case FsmState::FLY_WITH_MSCKF:
                                                case FsmState::FLY_WITH_FCU_ODOM:
                                                {
-                                                   ROS_WARN("[Odom Fusion] Landing signal received :|");
+                                                   ROS_INFO("[Odom Fusion] Landing signal received :|");
                                                    break;
                                                }
                                                default:
@@ -260,7 +270,7 @@ int main(int argc, char **argv)
     {
         std_srvs::Trigger restart;
         odom_restart_srv.call(restart);
-        ROS_ERROR("[Odom Fusion] Odom restart service called :|");
+        ROS_INFO("[Odom Fusion] Odom restart service called :|");
 
         odom_src.restart();
     };
@@ -428,11 +438,13 @@ int main(int argc, char **argv)
         odom.twist.twist.linear.z = v_world.z();
     };
 
-    bool use_z_from_tof = (int)param["use_z_from_tof"];
+    int Z_mode = param["Z_mode"];
+
+    // Z_mode == 1: use z from ToF
     bool first_use_tof_z = true;
-    bool last_tof_valid;
-    double last_odom_z;
-    double delta_z = 0.0;
+    bool prev_tof_valid;
+    double prev_odom_z;
+    double z_smoother = 0.0;
     auto useZFromToF = [&](nav_msgs::Odometry &odom_output)
     {
         bool tof_valid = fcu_odom_src.isStarted() && isFcuOdomCheckPassed();
@@ -444,21 +456,77 @@ int main(int argc, char **argv)
             odom_output.pose.pose.position.z = latest_fcu_odom_debiased.pose.pose.position.z;
         }
 
+        // Z smoother
         if (first_use_tof_z)
             first_use_tof_z = false;
-        else if (tof_valid != last_tof_valid)
-            delta_z = last_odom_z - odom_output.pose.pose.position.z;
-
-        odom_output.pose.pose.position.z += delta_z;
-
-        last_tof_valid = tof_valid;
-        last_odom_z = odom_output.pose.pose.position.z;
+        else if (tof_valid != prev_tof_valid)
+            z_smoother = prev_odom_z - odom_output.pose.pose.position.z;
+        odom_output.pose.pose.position.z += z_smoother;
+        prev_tof_valid = tof_valid;
+        prev_odom_z = odom_output.pose.pose.position.z;
     };
 
-    // bool est_z_from_lidar_map = (int)param["est_z_from_lidar_map"];
-    // string revised_odom_topic = param["revised_odom_topic"];
+    // Z_mode == 2: estimate z from lidar map
+    double est_z_rate = param["est_z_rate"];
+    bool recv_revised_odom = false;
+    mutex revised_odom_mtx;
+    Vector3d latest_revised_p;
+    Quaterniond latest_revised_q;
+    ros::Time prev_revised_odom_time;
+    auto revisedOdomCallback = [&](const nav_msgs::Odometry::ConstPtr &msg)
+    {
+        if (msg->header.stamp - prev_revised_odom_time < ros::Duration(0.5 / est_z_rate))
+            return;
 
-    int self_id = -1;
+        lock_guard<mutex> lock(revised_odom_mtx);
+        latest_revised_p << msg->pose.pose.position.x, msg->pose.pose.position.y, msg->pose.pose.position.z;
+        latest_revised_q = Quaterniond(msg->pose.pose.orientation.w,
+                                       msg->pose.pose.orientation.x,
+                                       msg->pose.pose.orientation.y,
+                                       msg->pose.pose.orientation.z);
+        prev_revised_odom_time = msg->header.stamp;
+
+        recv_revised_odom = true;
+    };
+    ros::Subscriber revised_odom_sub;
+
+    thread est_z_from_lidar_map_thread;
+    atomic<double> z_est(0.0);
+    atomic<bool> z_est_available(false);
+    PointCloud<PointXYZ>::Ptr cloud(new PointCloud<PointXYZ>);
+    KdTreeFLANN<PointXYZ> kdtree;
+    double search_radius = param["kdtree_search_radius"];
+    if (Z_mode == 2)
+    {
+        revised_odom_sub =
+            nh.subscribe<nav_msgs::Odometry>(param["revised_odom_topic"], 1000,
+                                             revisedOdomCallback,
+                                             ros::VoidConstPtr(),
+                                             ros::TransportHints().tcpNoDelay());
+
+        string map_path = argv[2];
+        if (pcl::io::loadPCDFile<PointXYZ>(map_path, *cloud) == -1)
+        {
+            ROS_FATAL_STREAM("[Odom Fusion] Failed to load lidar map from " << (string)param["map_path"]);
+            ros::shutdown();
+            return -1;
+        }
+        kdtree.setInputCloud(cloud);
+    }
+    double delta_z = 0.0;
+    LowPassFilter<double> delta_z_lpf(param["cutoff_frequency_z"], param["max_delta_z"]);
+    auto estZFromLidarMap = [&](nav_msgs::Odometry &odom_output)
+    {
+        bool ground_smooth = tof_src.isStarted() && tof_continuity_check.isPassed();
+        if (ground_smooth && z_est_available)
+            delta_z = z_est - odom_output.pose.pose.position.z;
+
+        delta_z_lpf.input(delta_z, ros::Time::now().toSec());
+
+        odom_output.pose.pose.position.z += delta_z_lpf.output();
+    };
+
+    int self_id = 250;
     if (getenv("DRONE_ID") != nullptr)
         self_id = atoi(getenv("DRONE_ID"));
     else
@@ -522,7 +590,7 @@ int main(int argc, char **argv)
                                 if (abs(x - x_avg) > 0.013 || abs(y - y_avg) > 0.013 || abs(z - z_avg) > 0.013 || abs(yaw - yaw_avg) > 0.013)
                                 {
                                     state = FsmState::WAIT_FOR_FCU_ODOM;
-                                    ROS_ERROR_STREAM("[Odom Fusion] \033[43;30mCALIB_FCU_ODOM\033[0m --> \033[43;30mWAIT_FOR_FCU_ODOM\033[0m Unstable initial z or yaw bias of fcu odometry, calibration restarted #^#");
+                                    ROS_ERROR("[Odom Fusion] \033[43;30mCALIB_FCU_ODOM\033[0m --> \033[43;30mWAIT_FOR_FCU_ODOM\033[0m Unstable initial z or yaw bias of fcu odometry, calibration restarted #^#");
                                     continue;
                                 }
 
@@ -569,7 +637,7 @@ int main(int argc, char **argv)
                             if (!isFcuOdomCheckPassed())
                             {
                                 state = FsmState::WAIT_FOR_FCU_ODOM;
-                                ROS_ERROR_STREAM("[Odom Fusion] \033[43;30mCALIB_FCU_ODOM\033[0m --> \033[43;30mWAIT_FOR_FCU_ODOM\033[0m Exceptions in fcu odometry (probably no optical flow), calicration terminated #^#");
+                                ROS_ERROR("[Odom Fusion] \033[43;30mCALIB_FCU_ODOM\033[0m --> \033[43;30mWAIT_FOR_FCU_ODOM\033[0m Exceptions in fcu odometry (probably no optical flow), calicration terminated #^#");
                                 ROS_ERROR("[Odom Fusion] Fcu odometry restart functionality is not supported yet !!! Pretend it's been restarted #^#");
                                 break;
                             }
@@ -597,8 +665,17 @@ int main(int argc, char **argv)
 
                                 applySmoother(latest_vins_odom);
 
-                                if (use_z_from_tof)
+                                switch (Z_mode)
+                                {
+                                case 0:
+                                    break;
+                                case 1:
                                     useZFromToF(latest_vins_odom);
+                                    break;
+                                case 2:
+                                    estZFromLidarMap(latest_vins_odom);
+                                    break;
+                                }
 
                                 changeHeader(latest_vins_odom);
                                 odom_output_pub.publish(latest_vins_odom);
@@ -611,8 +688,17 @@ int main(int argc, char **argv)
 
                                 applySmoother(latest_msckf_odom);
 
-                                if (use_z_from_tof)
+                                switch (Z_mode)
+                                {
+                                case 0:
+                                    break;
+                                case 1:
                                     useZFromToF(latest_msckf_odom);
+                                    break;
+                                case 2:
+                                    estZFromLidarMap(latest_msckf_odom);
+                                    break;
+                                }
 
                                 changeHeader(latest_msckf_odom);
                                 odom_output_pub.publish(latest_msckf_odom);
@@ -628,8 +714,17 @@ int main(int argc, char **argv)
                                 applySmoother(latest_fcu_odom_debiased);
                                 toWorldVel(latest_fcu_odom_debiased);
 
-                                if (use_z_from_tof)
+                                switch (Z_mode)
+                                {
+                                case 0:
+                                    break;
+                                case 1:
                                     useZFromToF(latest_fcu_odom_debiased);
+                                    break;
+                                case 2:
+                                    estZFromLidarMap(latest_fcu_odom_debiased);
+                                    break;
+                                }
 
                                 changeHeader(latest_fcu_odom_debiased);
                                 odom_output_pub.publish(latest_fcu_odom_debiased);
@@ -654,7 +749,7 @@ int main(int argc, char **argv)
                         while (ros::ok())
                         {
                             bool safe_to_enable_cmd_ctrl =
-                                (allow_high_altitude_flight ? true : tof_conservative_hgt_check.isPassed()) &&
+                                (allow_high_altitude_flight ? true : (tof_src.isStarted() && tof_conservative_hgt_check.isPassed())) &&
                                 ((vins_odom_src.isStarted() && isVinsCheckPassed()) ||
                                  (msckf_odom_src.isStarted() && isMsckfCheckPassed()));
 
@@ -664,7 +759,7 @@ int main(int argc, char **argv)
                                 allow.request.data = true;
                                 set_cmd_ctrl_permission_srv.call(allow);
                                 allow_px4ctrl_cmd_ctrl = true;
-                                ROS_INFO("[Odom Fusion] \033[32mVins ready and flight altitude safe !!! Allow command control ^_^");
+                                ROS_INFO("[Odom Fusion] \033[32mVIO ready and flight altitude safe !!! Allow command control ^_^");
                             }
                             else if (!safe_to_enable_cmd_ctrl && allow_px4ctrl_cmd_ctrl)
                             {
@@ -672,7 +767,7 @@ int main(int argc, char **argv)
                                 disallow.request.data = false;
                                 set_cmd_ctrl_permission_srv.call(disallow);
                                 allow_px4ctrl_cmd_ctrl = false;
-                                ROS_ERROR("[Odom Fusion] Exceptions in vins odometry or flight altitude exceeding maximum range !!! Prohibit command control #^#");
+                                ROS_ERROR("[Odom Fusion] Exceptions in VIOs or flight altitude exceeding maximum range !!! Prohibit command control #^#");
                             }
 
                             commu_with_px4ctrl_rate.sleep();
@@ -724,6 +819,117 @@ int main(int argc, char **argv)
 
         case FsmState::FLY_WITH_VINS:
         {
+            if (!est_z_from_lidar_map_thread.joinable() && Z_mode == 2)
+                est_z_from_lidar_map_thread = thread(
+                    [&]()
+                    {
+                        ros::Rate r(est_z_rate);
+                        bool first_z_est = true;
+                        double prev_z_est;
+                        while (ros::ok())
+                        {
+                            bool ground_smooth = tof_src.isStarted() && tof_continuity_check.isPassed();
+                            if (recv_revised_odom && ground_smooth)
+                            {
+                                //************* 1. Compute z with respect to the ground hit point of ToF sensor *************//
+                                double tof_dist = tof_src.getLatestDataCopy().distance;
+                                Vector3d tof_vec_body(0.0, 0.0, -tof_dist);
+                                Vector3d tof_vec_world;
+                                Vector3d ground_hit_pt;
+                                {
+                                    lock_guard<mutex> lock(revised_odom_mtx);
+                                    if (acos((latest_revised_q * Vector3d::UnitZ()).dot(Vector3d::UnitZ())) > (M_PI / 6))
+                                    {
+                                        ROS_ERROR("[Odom Fusion] Excessive drone attitude #^# Terminate map-based z estimation 🤧🤧🤧");
+                                        goto end_z_est;
+                                    }
+                                    tof_vec_world = latest_revised_q * tof_vec_body;
+                                    ground_hit_pt = latest_revised_q * tof_vec_body + latest_revised_p;
+                                }
+                                double z_to_ground = abs(tof_vec_world.z());
+
+                                //************* 2. Compute ground height *************//
+                                vector<Vector3d> ground_pts;
+                                vector<int> ids;
+                                vector<float> sqr_dists;
+                                if (kdtree.radiusSearch(PointXYZ(ground_hit_pt.x(),
+                                                                 ground_hit_pt.y(),
+                                                                 ground_hit_pt.z()),
+                                                        search_radius, ids, sqr_dists) > 9)
+                                {
+                                    for (size_t i = 0; i < ids.size(); ++i)
+                                    {
+                                        PointXYZ pt = (*cloud)[ids[i]];
+                                        ground_pts.emplace_back(pt.x, pt.y, pt.z);
+                                    }
+                                }
+                                else
+                                {
+                                    ROS_WARN_STREAM("[Odom Fusion] Only " << ids.size() << " (< 10) ground points found around hit point of the ToF sensor. Terminate map-based z estimation 🤧🤧🤧");
+                                    goto end_z_est;
+                                }
+
+                                // 🥳🥳🥳 PCA 🥳🥳🥳
+                                Vector3d centroid;
+                                for (const auto &pt : ground_pts)
+                                    centroid += pt;
+                                centroid /= ground_pts.size();
+
+                                MatrixXd centered_pts(3, ground_pts.size());
+                                for (size_t i = 0; i < ground_pts.size(); ++i)
+                                    centered_pts.col(i) = ground_pts[i] - centroid;
+
+                                JacobiSVD<MatrixXd> svd(centered_pts, ComputeThinU | ComputeThinV);
+                                Vector3d singular_values = svd.singularValues();
+                                ROS_INFO_STREAM("[Odom Fusion] Singular values of the ground (" << ids.size() << " points) around the ToF hit point: " << singular_values.transpose());
+
+                                if ((singular_values(1) / singular_values(0)) < 0.8 ||
+                                    (singular_values(2) / singular_values(0)) > 0.2)
+                                {
+                                    ROS_WARN("[Odom Fusion] Ground around the ToF hit point is not like a plane. Terminate map-based z estimation 🤧🤧🤧");
+                                    goto end_z_est;
+                                }
+
+                                Vector3d normal = svd.matrixU().col(2);
+                                double normal_tilt_angle = acos(std::clamp(normal.dot(Vector3d::UnitZ()) / normal.norm(), -1.0, 1.0));
+                                if (normal_tilt_angle > M_PI / 2)
+                                    normal_tilt_angle = M_PI - normal_tilt_angle;
+                                if (normal_tilt_angle > M_PI / 4)
+                                {
+                                    ROS_WARN_STREAM("[Odom Fusion] Ground plane around the ToF hit point is tilted too much (" << normal_tilt_angle * 180.0 / M_PI << " > 45 deg). Terminate map-based z estimation 🤧🤧🤧");
+                                    goto end_z_est;
+                                }
+
+                                double z_ground = centroid.z();
+
+                                //************* 3. Estimate z *************//
+                                z_est = z_to_ground + z_ground;
+
+                                if (first_z_est)
+                                {
+                                    prev_z_est = z_est;
+                                    first_z_est = false;
+                                }
+                                else
+                                {
+                                    if (abs(z_est - prev_z_est) > 0.250)
+                                    {
+                                        ROS_WARN_STREAM("[Odom Fusion] Exception in z estimation (z jump = " << abs(z_est - prev_z_est) << "m) 🤧🤧🤧");
+                                        z_est_available = false;
+                                        first_z_est = true;
+                                    }
+                                    else
+                                    {
+                                        z_est_available = true;
+                                        prev_z_est = z_est;
+                                    }
+                                }
+                            }
+                        end_z_est:
+                            r.sleep();
+                        }
+                    });
+
             // Try to switch to another odometer when there are exceptions in the current odometer
             if (!isVinsCheckPassed())
             {
@@ -865,4 +1071,5 @@ int main(int argc, char **argv)
         }
         data_check_rate.sleep();
     }
+    return 0;
 }

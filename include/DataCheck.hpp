@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <thread>
 #include <tuple>
 #include <ros/ros.h>
@@ -53,8 +54,8 @@ public:
     inline void startCheck() { enable_check = true; }
     inline void stopCheck() { enable_check = false; }
 
-    bool enable_check;
-    bool check_pass;
+    atomic<bool> enable_check;
+    atomic<bool> check_pass;
     double check_freq;
     tuple<DataSrc<Ts> &...> data_src;
     thread check_loop;

@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.0.2)
 project(odom_fusion)
 
 # set(DEFAULT_BUILD_TYPE "Debug")
-set(CMAKE_BUILD_TYPE "Debug")
+set(CMAKE_BUILD_TYPE "Release")
 
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -19,17 +19,18 @@ find_package(catkin REQUIRED COMPONENTS
     roscpp
     nav_msgs
     sensor_msgs
-    # traj_utils
-    quadrotor_msgs
     geometry_msgs
     mavros_msgs
     std_srvs
+    quadrotor_msgs
+    traj_utils
 )
 
 ## System dependencies are found with CMake's conventions
 # find_package(Boost REQUIRED COMPONENTS system)
 find_package(OpenCV REQUIRED)
 find_package(Boost REQUIRED)
+find_package(PCL REQUIRED)
 
 ## Uncomment this if the package has a setup.py. This macro ensures
 ## modules and global scripts declared therein get installed
@@ -134,6 +135,7 @@ include_directories(
     ${catkin_INCLUDE_DIRS}
     ${OpenCV_INCLUDE_DIRS}
     ${Boost_INCLUDE_DIRS}
+    ${PCL_INCLUDE_DIRS}
 )
 
 ## Declare a C++ library
@@ -166,6 +168,7 @@ target_link_libraries(${PROJECT_NAME}_node
     ${catkin_LIBRARIES}
     ${OpenCV_LIBRARIES}
     ${Boost_LIBRARIES}
+    ${PCL_LIBRARIES}
 )
 
 #############
