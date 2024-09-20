@@ -21,10 +21,13 @@
 #include <mavros_msgs/OpticalFlowRad.h>
 #include <std_srvs/Trigger.h>
 #include <std_srvs/SetBool.h>
+#include <sensor_msgs/PointCloud2.h>
+#include <geometry_msgs/Vector3.h>
 
 #include <pcl/io/pcd_io.h>
 #include <pcl/kdtree/kdtree_flann.h>
 #include <pcl/point_types.h>
+#include <pcl_conversions/pcl_conversions.h>
 #include "LowPassFilter.hpp"
 
 using namespace std;
@@ -496,6 +499,10 @@ int main(int argc, char **argv)
     PointCloud<PointXYZ>::Ptr cloud(new PointCloud<PointXYZ>);
     KdTreeFLANN<PointXYZ> kdtree;
     double search_radius = param["kdtree_search_radius"];
+    bool publish_debug_topic = (int)param["publish_debug_topic"];
+    ros::Publisher debug_map_pub = nh.advertise<sensor_msgs::PointCloud2>("map", 5);
+    ros::Publisher debug_local_ground_pub = nh.advertise<sensor_msgs::PointCloud2>("local_ground", 5);
+    ros::Publisher debug_singular_value_pub = nh.advertise<geometry_msgs::Vector3>("singular_values", 10);
     if (Z_mode == 2)
     {
         revised_odom_sub =
@@ -510,6 +517,17 @@ int main(int argc, char **argv)
             ROS_FATAL_STREAM("[Odom Fusion] Failed to load lidar map from " << (string)param["map_path"]);
             ros::shutdown();
             return -1;
+        }
+        if (publish_debug_topic)
+        {
+            sensor_msgs::PointCloud2 map_msg;
+            pcl::toROSMsg(*cloud, map_msg);
+            map_msg.header.frame_id = "world";
+            for (size_t i = 0; i < 10; ++i)
+            {
+                debug_map_pub.publish(map_msg);
+                this_thread::sleep_for(chrono::milliseconds(500));
+            }
         }
         kdtree.setInputCloud(cloud);
     }
@@ -571,7 +589,7 @@ int main(int argc, char **argv)
                         double x_avg = 0.0, y_avg = 0.0, z_avg = 0.0, yaw_avg = 0.0;
                         ros::Rate calib_proc_rate(fcu_odom_src.src_freq);
                         double first_yaw = 0.0;
-                        for (size_t i = 1; ros::ok(); i++)
+                        for (size_t i = 1; ros::ok(); ++i)
                         {
                             // TODO: retrieve const ref not value
                             nav_msgs::Odometry latest_fcu_odom = fcu_odom_src.getLatestDataCopy();
@@ -840,7 +858,7 @@ int main(int argc, char **argv)
                                     lock_guard<mutex> lock(revised_odom_mtx);
                                     if (acos((latest_revised_q * Vector3d::UnitZ()).dot(Vector3d::UnitZ())) > (M_PI / 6))
                                     {
-                                        ROS_ERROR("[Odom Fusion] Excessive drone attitude #^# Terminate map-based z estimation 🤧🤧🤧");
+                                        ROS_ERROR("[Odom Fusion] Excessive drone attitude !!! Terminate map-based z estimation #^#");
                                         goto end_z_est;
                                     }
                                     tof_vec_world = latest_revised_q * tof_vec_body;
@@ -852,20 +870,32 @@ int main(int argc, char **argv)
                                 vector<Vector3d> ground_pts;
                                 vector<int> ids;
                                 vector<float> sqr_dists;
-                                if (kdtree.radiusSearch(PointXYZ(ground_hit_pt.x(),
-                                                                 ground_hit_pt.y(),
-                                                                 ground_hit_pt.z()),
-                                                        search_radius, ids, sqr_dists) > 9)
+                                PointCloud<PointXYZ>::Ptr local_ground(new PointCloud<PointXYZ>);
+                                kdtree.radiusSearch(PointXYZ(ground_hit_pt.x(),
+                                                             ground_hit_pt.y(),
+                                                             ground_hit_pt.z()),
+                                                    search_radius, ids, sqr_dists);
+                                for (size_t i = 0; i < ids.size(); ++i)
                                 {
-                                    for (size_t i = 0; i < ids.size(); ++i)
-                                    {
-                                        PointXYZ pt = (*cloud)[ids[i]];
-                                        ground_pts.emplace_back(pt.x, pt.y, pt.z);
-                                    }
+                                    PointXYZ pt = (*cloud)[ids[i]];
+                                    ground_pts.emplace_back(pt.x, pt.y, pt.z);
+                                    if (publish_debug_topic)
+                                        local_ground->points.push_back(pt);
                                 }
-                                else
+                                if (publish_debug_topic)
                                 {
-                                    ROS_WARN_STREAM("[Odom Fusion] Only " << ids.size() << " (< 10) ground points found around hit point of the ToF sensor. Terminate map-based z estimation 🤧🤧🤧");
+                                    local_ground->width = ground_pts.size();
+                                    local_ground->height = 1;
+                                    local_ground->is_dense = true;
+
+                                    sensor_msgs::PointCloud2 local_ground_msg;
+                                    pcl::toROSMsg(*local_ground, local_ground_msg);
+                                    local_ground_msg.header.frame_id = "world";
+                                    debug_local_ground_pub.publish(local_ground_msg);
+                                }
+                                if (ground_pts.size() < 8)
+                                {
+                                    ROS_WARN_STREAM("[Odom Fusion] Only " << ids.size() << " (< 8) ground points found around hit point of the ToF sensor. Terminate map-based z estimation #^#");
                                     goto end_z_est;
                                 }
 
@@ -882,11 +912,19 @@ int main(int argc, char **argv)
                                 JacobiSVD<MatrixXd> svd(centered_pts, ComputeThinU | ComputeThinV);
                                 Vector3d singular_values = svd.singularValues();
                                 ROS_INFO_STREAM("[Odom Fusion] Singular values of the ground (" << ids.size() << " points) around the ToF hit point: " << singular_values.transpose());
-
-                                if ((singular_values(1) / singular_values(0)) < 0.8 ||
-                                    (singular_values(2) / singular_values(0)) > 0.2)
+                                if (publish_debug_topic)
                                 {
-                                    ROS_WARN("[Odom Fusion] Ground around the ToF hit point is not like a plane. Terminate map-based z estimation 🤧🤧🤧");
+                                    geometry_msgs::Vector3 singular_values_msg;
+                                    singular_values_msg.x = singular_values(0);
+                                    singular_values_msg.y = singular_values(1);
+                                    singular_values_msg.z = singular_values(2);
+                                    debug_singular_value_pub.publish(singular_values_msg);
+                                }
+
+                                if ((singular_values(1) / singular_values(0)) < 0.33 ||
+                                    (singular_values(2) / singular_values(0)) > 0.1)
+                                {
+                                    ROS_WARN("[Odom Fusion] Ground around the ToF hit point is not like a plane. Terminate map-based z estimation #^#");
                                     goto end_z_est;
                                 }
 
@@ -896,7 +934,7 @@ int main(int argc, char **argv)
                                     normal_tilt_angle = M_PI - normal_tilt_angle;
                                 if (normal_tilt_angle > M_PI / 4)
                                 {
-                                    ROS_WARN_STREAM("[Odom Fusion] Ground plane around the ToF hit point is tilted too much (" << normal_tilt_angle * 180.0 / M_PI << " > 45 deg). Terminate map-based z estimation 🤧🤧🤧");
+                                    ROS_WARN_STREAM("[Odom Fusion] Ground plane around the ToF hit point is tilted too much (" << normal_tilt_angle * 180.0 / M_PI << " > 45 deg). Terminate map-based z estimation #^#");
                                     goto end_z_est;
                                 }
 
@@ -914,7 +952,7 @@ int main(int argc, char **argv)
                                 {
                                     if (abs(z_est - prev_z_est) > 0.250)
                                     {
-                                        ROS_WARN_STREAM("[Odom Fusion] Exception in z estimation (z jump = " << abs(z_est - prev_z_est) << "m) 🤧🤧🤧");
+                                        ROS_WARN_STREAM("[Odom Fusion] Exception in z estimation (z jump = " << abs(z_est - prev_z_est) << "m) #^#");
                                         z_est_available = false;
                                         first_z_est = true;
                                     }
