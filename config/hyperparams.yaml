@@ -12,7 +12,7 @@ msckf_odom_timeout: 0.1
 
 # Data src 2
 fcu_odom_topic: "/mavros/local_position/odom"
-fcu_odom_freq: 100.0
+fcu_odom_freq: 105.0  # Make sure the output freq is > 100Hz to pass the drone_node test
 fcu_odom_timeout: 0.1
 
 # Data src 3
@@ -79,8 +79,8 @@ odom_output_topic: "odom"
 allow_high_altitude_flight: 0
 set_px4ctrl_cmd_ctrl_permission_service: "/px4ctrl/set_cmd_ctrl_permission"
 
-revised_odom_topic: "/vins_estimator/imu_propagate"
-# revised_odom_topic: "/relative_loc/revised_odom"
+# revised_odom_topic: "/vins_estimator/imu_propagate"
+revised_odom_topic: "/relative_loc/revised_odom"
 
 smoother_decay_const_p: 0.005
 smoother_decay_const_yaw: 0.05
@@ -88,7 +88,11 @@ smoother_decay_const_yaw: 0.05
 Z_mode: 2  # 0: z from vio  1: z from ToF  2: estimate z from lidar map
 est_z_rate: 2.0
 kdtree_search_radius: 1.0
-cutoff_frequency_z: 1.0
-max_delta_z: 0.05
+min_2nd_singular_value: 0.77
+max_3rd_singular_value: 0.52
+cutoff_frequency_z_est: 1.0
+max_delta_z_est: 0.13
+cutoff_frequency_z: 5.2
+max_delta_z: 0.03
 
 publish_debug_topic: 1

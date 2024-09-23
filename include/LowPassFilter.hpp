@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mutex>
 #include <math.h>
 #include <Eigen/Dense>
 
@@ -31,6 +32,7 @@ public:
 
     void input(const T &x_n, double t_n)
     {
+        lock_guard<mutex> lock(y_mtx);
         if (!initialized)
         {
             y_prev = x_n;
@@ -72,15 +74,23 @@ public:
         t_prev = t_n;
     }
 
-    T output() const
+    T output()
     {
+        lock_guard<mutex> lock(y_mtx);
         return y_prev;
+    }
+
+    void reset()
+    {
+        lock_guard<mutex> lock(y_mtx);
+        initialized = false;
     }
 
 private:
     double fc;          // Cutoff frequency
     double tau;         // Time constant
     T y_prev;           // Previous output
+    mutex y_mtx;        // Mutex for y_prev
     T x_prev;           // Previous input
     double t_prev;      // Previous timestamp
     double delta_y_max; // Maximum change threshold
@@ -102,6 +112,7 @@ public:
 
     void input(const Quaterniond &x_n, double t_n)
     {
+        lock_guard<mutex> lock(y_mtx);
         if (!initialized)
         {
             y_prev = x_n.normalized();
@@ -141,15 +152,23 @@ public:
         t_prev = t_n;
     }
 
-    Quaterniond output() const
+    Quaterniond output()
     {
+        lock_guard<mutex> lock(y_mtx);
         return y_prev;
+    }
+
+    void reset()
+    {
+        lock_guard<mutex> lock(y_mtx);
+        initialized = false;
     }
 
 private:
     double fc;              // Cutoff frequency
     double tau;             // Time constant
     Quaterniond y_prev;     // Previous output
+    mutex y_mtx;            // Mutex for y_prev
     double t_prev;          // Previous timestamp
     double delta_angle_max; // Maximum allowed angle change (radians)
     bool initialized;       // Initialization flag

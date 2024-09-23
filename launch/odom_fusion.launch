@@ -1,3 +1,4 @@
 <launch>
+    <param name="/use_sim_time" value="false"/>
     <node name="odom_fusion" pkg="odom_fusion" type="odom_fusion_node" output="screen" args="$(find odom_fusion)/config/hyperparams.yaml $(find odom_fusion)/map/new.pcd" />
 </launch>

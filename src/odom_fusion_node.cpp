@@ -1,4 +1,5 @@
 #include <atomic>
+#include <chrono>
 #include <string>
 #include <thread>
 #include <mutex>
@@ -23,6 +24,7 @@
 #include <std_srvs/SetBool.h>
 #include <sensor_msgs/PointCloud2.h>
 #include <geometry_msgs/Vector3.h>
+#include <std_msgs/Float32.h>
 
 #include <pcl/io/pcd_io.h>
 #include <pcl/kdtree/kdtree_flann.h>
@@ -495,14 +497,17 @@ int main(int argc, char **argv)
 
     thread est_z_from_lidar_map_thread;
     atomic<double> z_est(0.0);
-    atomic<bool> z_est_available(false);
+    atomic<bool> z_est_updated(false);
     PointCloud<PointXYZ>::Ptr cloud(new PointCloud<PointXYZ>);
     KdTreeFLANN<PointXYZ> kdtree;
     double search_radius = param["kdtree_search_radius"];
+    double min_2nd_singular_value = param["min_2nd_singular_value"];
+    double max_3rd_singular_value = param["max_3rd_singular_value"];
     bool publish_debug_topic = (int)param["publish_debug_topic"];
     ros::Publisher debug_map_pub = nh.advertise<sensor_msgs::PointCloud2>("map", 5);
     ros::Publisher debug_local_ground_pub = nh.advertise<sensor_msgs::PointCloud2>("local_ground", 5);
     ros::Publisher debug_singular_value_pub = nh.advertise<geometry_msgs::Vector3>("singular_values", 10);
+    ros::Publisher debug_z_est_pub = nh.advertise<std_msgs::Float32>("z_est", 10);
     if (Z_mode == 2)
     {
         revised_odom_sub =
@@ -523,25 +528,36 @@ int main(int argc, char **argv)
             sensor_msgs::PointCloud2 map_msg;
             pcl::toROSMsg(*cloud, map_msg);
             map_msg.header.frame_id = "world";
-            for (size_t i = 0; i < 10; ++i)
+            for (size_t i = 0; i < 13; ++i)
             {
                 debug_map_pub.publish(map_msg);
-                this_thread::sleep_for(chrono::milliseconds(500));
+                this_thread::sleep_for(chrono::milliseconds(200));
             }
         }
         kdtree.setInputCloud(cloud);
     }
     double delta_z = 0.0;
-    LowPassFilter<double> delta_z_lpf(param["cutoff_frequency_z"], param["max_delta_z"]);
+    LowPassFilter<double> z_est_lpf((double)param["cutoff_frequency_z_est"], (double)param["max_delta_z_est"]);
+    LowPassFilter<double> z_lpf((double)param["cutoff_frequency_z"], (double)param["max_delta_z"]);
+    double prev_z_est_time = 0.0;
     auto estZFromLidarMap = [&](nav_msgs::Odometry &odom_output)
     {
+        // When enabling /use_sim_time and playing rosbag with --clock, ros::Time::now() is only updated at 100Hz 😤😤😤
+        double now_in_seconds = chrono::duration_cast<chrono::duration<double>>(chrono::high_resolution_clock::now().time_since_epoch()).count();
+
         bool ground_smooth = tof_src.isStarted() && tof_continuity_check.isPassed();
-        if (ground_smooth && z_est_available)
-            delta_z = z_est - odom_output.pose.pose.position.z;
+        if (ground_smooth && z_est_updated)
+        {
+            if (now_in_seconds - prev_z_est_time > 3.0)
+                z_est_lpf.reset();
+            prev_z_est_time = now_in_seconds;
 
-        delta_z_lpf.input(delta_z, ros::Time::now().toSec());
-
-        odom_output.pose.pose.position.z += delta_z_lpf.output();
+            z_est_lpf.input(z_est, now_in_seconds);
+            delta_z = z_est_lpf.output() - odom_output.pose.pose.position.z;
+            z_est_updated = false;
+        }
+        z_lpf.input(odom_output.pose.pose.position.z + delta_z, now_in_seconds);
+        odom_output.pose.pose.position.z = z_lpf.output();
     };
 
     int self_id = 250;
@@ -571,6 +587,8 @@ int main(int argc, char **argv)
         {
         case FsmState::WAIT_FOR_FCU_ODOM:
         {
+            if (calib_fcu_odom_thread.joinable())
+                calib_fcu_odom_thread.join();
             if (fcu_odom_src.isStarted() && tof_src.isStarted())
             {
                 state = FsmState::CALIB_FCU_ODOM;
@@ -607,9 +625,9 @@ int main(int argc, char **argv)
                             {
                                 if (abs(x - x_avg) > 0.013 || abs(y - y_avg) > 0.013 || abs(z - z_avg) > 0.013 || abs(yaw - yaw_avg) > 0.013)
                                 {
-                                    state = FsmState::WAIT_FOR_FCU_ODOM;
                                     ROS_ERROR("[Odom Fusion] \033[43;30mCALIB_FCU_ODOM\033[0m --> \033[43;30mWAIT_FOR_FCU_ODOM\033[0m Unstable initial z or yaw bias of fcu odometry, calibration restarted #^#");
-                                    continue;
+                                    state = FsmState::WAIT_FOR_FCU_ODOM;
+                                    break;
                                 }
 
                                 if (abs(yaw) > 3.1015926)
@@ -647,16 +665,16 @@ int main(int argc, char **argv)
                                     }
                                     this_thread::sleep_for(chrono::milliseconds(500));
                                 }
-                                state = FsmState::TAKEOFF;
                                 ROS_INFO_STREAM("[Odom Fusion] \033[43;30mCALIB_FCU_ODOM\033[0m --> \033[43;30mTAKEOFF\033[0m :)");
+                                state = FsmState::TAKEOFF;
                                 break;
                             }
 
                             if (!isFcuOdomCheckPassed())
                             {
-                                state = FsmState::WAIT_FOR_FCU_ODOM;
                                 ROS_ERROR("[Odom Fusion] \033[43;30mCALIB_FCU_ODOM\033[0m --> \033[43;30mWAIT_FOR_FCU_ODOM\033[0m Exceptions in fcu odometry (probably no optical flow), calicration terminated #^#");
                                 ROS_ERROR("[Odom Fusion] Fcu odometry restart functionality is not supported yet !!! Pretend it's been restarted #^#");
+                                state = FsmState::WAIT_FOR_FCU_ODOM;
                                 break;
                             }
 
@@ -862,7 +880,7 @@ int main(int argc, char **argv)
                                         goto end_z_est;
                                     }
                                     tof_vec_world = latest_revised_q * tof_vec_body;
-                                    ground_hit_pt = latest_revised_q * tof_vec_body + latest_revised_p;
+                                    ground_hit_pt = latest_revised_q * tof_vec_body + latest_revised_p + Vector3d(0.0, 0.0, z_lpf.output());
                                 }
                                 double z_to_ground = abs(tof_vec_world.z());
 
@@ -911,7 +929,7 @@ int main(int argc, char **argv)
 
                                 JacobiSVD<MatrixXd> svd(centered_pts, ComputeThinU | ComputeThinV);
                                 Vector3d singular_values = svd.singularValues();
-                                ROS_INFO_STREAM("[Odom Fusion] Singular values of the ground (" << ids.size() << " points) around the ToF hit point: " << singular_values.transpose());
+                                ROS_INFO_STREAM("[Odom Fusion] Singular values of the ground (" << ids.size() << " points) around the ToF hit point: " << singular_values.transpose() << "  Normal: " << svd.matrixU().col(2).transpose());
                                 if (publish_debug_topic)
                                 {
                                     geometry_msgs::Vector3 singular_values_msg;
@@ -921,8 +939,9 @@ int main(int argc, char **argv)
                                     debug_singular_value_pub.publish(singular_values_msg);
                                 }
 
-                                if ((singular_values(1) / singular_values(0)) < 0.33 ||
-                                    (singular_values(2) / singular_values(0)) > 0.1)
+                                if ((singular_values(1) < min_2nd_singular_value ||
+                                     singular_values(2) > max_3rd_singular_value) &&
+                                    (singular_values(1) / singular_values(2)) < 4)
                                 {
                                     ROS_WARN("[Odom Fusion] Ground around the ToF hit point is not like a plane. Terminate map-based z estimation #^#");
                                     goto end_z_est;
@@ -953,13 +972,20 @@ int main(int argc, char **argv)
                                     if (abs(z_est - prev_z_est) > 0.250)
                                     {
                                         ROS_WARN_STREAM("[Odom Fusion] Exception in z estimation (z jump = " << abs(z_est - prev_z_est) << "m) #^#");
-                                        z_est_available = false;
+                                        z_est_updated = false;
                                         first_z_est = true;
                                     }
                                     else
                                     {
-                                        z_est_available = true;
+                                        z_est_updated = true;
                                         prev_z_est = z_est;
+
+                                        if (publish_debug_topic)
+                                        {
+                                            std_msgs::Float32 z_est_msg;
+                                            z_est_msg.data = z_est;
+                                            debug_z_est_pub.publish(z_est_msg);
+                                        }
                                     }
                                 }
                             }
