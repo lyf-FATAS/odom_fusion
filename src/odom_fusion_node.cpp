@@ -23,6 +23,7 @@
 #include <std_srvs/Trigger.h>
 #include <std_srvs/SetBool.h>
 #include <sensor_msgs/PointCloud2.h>
+#include <geometry_msgs/PointStamped.h>
 #include <geometry_msgs/Vector3.h>
 #include <std_msgs/Float32.h>
 
@@ -504,8 +505,9 @@ int main(int argc, char **argv)
     double min_2nd_singular_value = param["min_2nd_singular_value"];
     double max_3rd_singular_value = param["max_3rd_singular_value"];
     bool publish_debug_topic = (int)param["publish_debug_topic"];
-    ros::Publisher debug_map_pub = nh.advertise<sensor_msgs::PointCloud2>("map", 5);
-    ros::Publisher debug_local_ground_pub = nh.advertise<sensor_msgs::PointCloud2>("local_ground", 5);
+    ros::Publisher debug_map_pub = nh.advertise<sensor_msgs::PointCloud2>("map", 10);
+    ros::Publisher debug_ground_search_point_pub = nh.advertise<geometry_msgs::PointStamped>("ground_search_point", 10);
+    ros::Publisher debug_local_ground_pub = nh.advertise<sensor_msgs::PointCloud2>("local_ground", 10);
     ros::Publisher debug_singular_value_pub = nh.advertise<geometry_msgs::Vector3>("singular_values", 10);
     ros::Publisher debug_z_est_pub = nh.advertise<std_msgs::Float32>("z_est", 10);
     if (Z_mode == 2)
@@ -880,9 +882,19 @@ int main(int argc, char **argv)
                                         goto end_z_est;
                                     }
                                     tof_vec_world = latest_revised_q * tof_vec_body;
-                                    ground_hit_pt = latest_revised_q * tof_vec_body + latest_revised_p + Vector3d(0.0, 0.0, z_lpf.output());
+                                    ground_hit_pt = latest_revised_q * tof_vec_body + latest_revised_p + Vector3d(0.0, 0.0, z_lpf.output() - latest_revised_p.z());
                                 }
                                 double z_to_ground = abs(tof_vec_world.z());
+
+                                if (publish_debug_topic)
+                                {
+                                    geometry_msgs::PointStamped gsp_msg;
+                                    gsp_msg.header.frame_id = "world";
+                                    gsp_msg.point.x = ground_hit_pt.x();
+                                    gsp_msg.point.y = ground_hit_pt.y();
+                                    gsp_msg.point.z = ground_hit_pt.z();
+                                    debug_ground_search_point_pub.publish(gsp_msg);
+                                }
 
                                 //************* 2. Compute ground height *************//
                                 vector<Vector3d> ground_pts;
@@ -897,9 +909,11 @@ int main(int argc, char **argv)
                                 {
                                     PointXYZ pt = (*cloud)[ids[i]];
                                     ground_pts.emplace_back(pt.x, pt.y, pt.z);
+
                                     if (publish_debug_topic)
                                         local_ground->points.push_back(pt);
                                 }
+
                                 if (publish_debug_topic)
                                 {
                                     local_ground->width = ground_pts.size();
@@ -911,6 +925,7 @@ int main(int argc, char **argv)
                                     local_ground_msg.header.frame_id = "world";
                                     debug_local_ground_pub.publish(local_ground_msg);
                                 }
+
                                 if (ground_pts.size() < 8)
                                 {
                                     ROS_WARN_STREAM("[Odom Fusion] Only " << ids.size() << " (< 8) ground points found around hit point of the ToF sensor. Terminate map-based z estimation #^#");
