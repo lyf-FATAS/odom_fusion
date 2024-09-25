@@ -553,8 +553,6 @@ int main(int argc, char **argv)
         kdtree.setInputCloud(cloud);
     }
     double delta_z_from_est = 0.0;
-    LowPassFilter<double> z_est_lpf((double)param["cutoff_frequency_z_est"], (double)param["max_delta_z_est"]);
-    double prev_z_est_time;
     auto estZFromLidarMap = [&](nav_msgs::Odometry &odom_output)
     {
         // When enabling /use_sim_time and playing rosbag with --clock, ros::Time::now() is only updated at 100Hz 😤😤😤
@@ -563,12 +561,7 @@ int main(int argc, char **argv)
         bool ground_smooth = tof_src.isStarted() && tof_continuity_check.isPassed();
         if (ground_smooth && z_est_updated)
         {
-            if (now_in_seconds - prev_z_est_time > 3.0)
-                z_est_lpf.reset();
-            prev_z_est_time = now_in_seconds;
-
-            z_est_lpf.input(z_est, now_in_seconds);
-            delta_z_from_est = z_est_lpf.output() - odom_output.pose.pose.position.z;
+            delta_z_from_est = z_est - odom_output.pose.pose.position.z;
             z_est_updated = false;
         }
 
