@@ -1,5 +1,19 @@
 %YAML:1.0
 
+Z_mode: 1  # 0: z from vio  1: z from ToF  2: estimate z from lidar map
+est_z_rate: 2.0
+kdtree_search_radius: 1.0
+min_2nd_singular_value: 0.77
+max_3rd_singular_value: 0.52
+cutoff_frequency_z_tof: 1.0
+max_delta_z_tof: 0.05
+cutoff_frequency_z_est: 1.0
+max_delta_z_est: 0.13
+cutoff_frequency_z: 5.20
+max_delta_z: 0.03
+
+publish_debug_topic: 1
+
 # Data src 0
 vins_odom_topic: "/vins_estimator/imu_propagate"
 vins_odom_freq: 200.0
@@ -61,7 +75,7 @@ pos_max_jump: 0.520
 pos_jump_cooling_time: 0.250
 
 tof_max_jump: 0.1314
-tof_jump_cooling_time: 5.20
+tof_jump_cooling_time: 1.314
 
 # Check 4: imu amplitude check
 imu_amp_check_freq: 3.0
@@ -84,15 +98,3 @@ revised_odom_topic: "/relative_loc/revised_odom"
 
 smoother_decay_const_p: 0.005
 smoother_decay_const_yaw: 0.05
-
-Z_mode: 2  # 0: z from vio  1: z from ToF  2: estimate z from lidar map
-est_z_rate: 2.0
-kdtree_search_radius: 1.0
-min_2nd_singular_value: 0.77
-max_3rd_singular_value: 0.52
-cutoff_frequency_z_est: 1.0
-max_delta_z_est: 0.13
-cutoff_frequency_z: 5.2
-max_delta_z: 0.03
-
-publish_debug_topic: 1

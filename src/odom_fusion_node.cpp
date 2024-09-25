@@ -447,29 +447,43 @@ int main(int argc, char **argv)
     int Z_mode = param["Z_mode"];
 
     // Z_mode == 1: use z from ToF
-    bool first_use_tof_z = true;
-    bool prev_tof_valid;
-    double prev_odom_z;
-    double z_smoother = 0.0;
+    double delta_z_from_tof = 0.0;
+    LowPassFilter<double> z_tof_lpf((double)param["cutoff_frequency_z_tof"], (double)param["max_delta_z_tof"]);
+    double reset_delay = param["tof_jump_cooling_time"];
+    LowPassFilter<double> z_lpf((double)param["cutoff_frequency_z"], (double)param["max_delta_z"]);
+    double prev_z_tof_time;
     auto useZFromToF = [&](nav_msgs::Odometry &odom_output)
     {
-        bool tof_valid = fcu_odom_src.isStarted() && isFcuOdomCheckPassed();
-        if (tof_valid)
-        {
-            nav_msgs::Odometry latest_fcu_odom = fcu_odom_src.getLatestDataCopy();
-            nav_msgs::Odometry latest_fcu_odom_debiased;
-            debiasFcuOdom(latest_fcu_odom, latest_fcu_odom_debiased);
-            odom_output.pose.pose.position.z = latest_fcu_odom_debiased.pose.pose.position.z;
-        }
+        // When enabling /use_sim_time and playing rosbag with --clock, ros::Time::now() is only updated at 100Hz 😤😤😤
+        double now_in_seconds = chrono::duration_cast<chrono::duration<double>>(chrono::high_resolution_clock::now().time_since_epoch()).count();
 
-        // Z smoother
-        if (first_use_tof_z)
-            first_use_tof_z = false;
-        else if (tof_valid != prev_tof_valid)
-            z_smoother = prev_odom_z - odom_output.pose.pose.position.z;
-        odom_output.pose.pose.position.z += z_smoother;
-        prev_tof_valid = tof_valid;
-        prev_odom_z = odom_output.pose.pose.position.z;
+        bool ground_smooth = tof_src.isStarted() && tof_continuity_check.isPassed();
+        if (ground_smooth)
+        {
+            if (now_in_seconds - prev_z_tof_time > reset_delay)
+                z_tof_lpf.reset();
+            prev_z_tof_time = now_in_seconds;
+
+            double tof_dist = tof_src.getLatestDataCopy().distance;
+            Vector3d tof_vec_body(0.0, 0.0, -tof_dist);
+
+            Quaterniond current_q(odom_output.pose.pose.orientation.w,
+                                  odom_output.pose.pose.orientation.x,
+                                  odom_output.pose.pose.orientation.y,
+                                  odom_output.pose.pose.orientation.z);
+            if (acos((current_q * Vector3d::UnitZ()).dot(Vector3d::UnitZ())) > (M_PI / 7))
+            {
+                ROS_ERROR("[Odom Fusion] Excessive drone attitude !!! Terminate ToF z correction #^#");
+                goto end_z_tof;
+            }
+            Vector3d tof_vec_world = current_q * tof_vec_body;
+            z_tof_lpf.input(abs(tof_vec_world.z()), now_in_seconds);
+            delta_z_from_tof = z_tof_lpf.output() - odom_output.pose.pose.position.z;
+        }
+    end_z_tof:
+
+        z_lpf.input(odom_output.pose.pose.position.z + delta_z_from_tof, now_in_seconds);
+        odom_output.pose.pose.position.z = z_lpf.output();
     };
 
     // Z_mode == 2: estimate z from lidar map
@@ -538,10 +552,9 @@ int main(int argc, char **argv)
         }
         kdtree.setInputCloud(cloud);
     }
-    double delta_z = 0.0;
+    double delta_z_from_est = 0.0;
     LowPassFilter<double> z_est_lpf((double)param["cutoff_frequency_z_est"], (double)param["max_delta_z_est"]);
-    LowPassFilter<double> z_lpf((double)param["cutoff_frequency_z"], (double)param["max_delta_z"]);
-    double prev_z_est_time = 0.0;
+    double prev_z_est_time;
     auto estZFromLidarMap = [&](nav_msgs::Odometry &odom_output)
     {
         // When enabling /use_sim_time and playing rosbag with --clock, ros::Time::now() is only updated at 100Hz 😤😤😤
@@ -555,10 +568,11 @@ int main(int argc, char **argv)
             prev_z_est_time = now_in_seconds;
 
             z_est_lpf.input(z_est, now_in_seconds);
-            delta_z = z_est_lpf.output() - odom_output.pose.pose.position.z;
+            delta_z_from_est = z_est_lpf.output() - odom_output.pose.pose.position.z;
             z_est_updated = false;
         }
-        z_lpf.input(odom_output.pose.pose.position.z + delta_z, now_in_seconds);
+
+        z_lpf.input(odom_output.pose.pose.position.z + delta_z_from_est, now_in_seconds);
         odom_output.pose.pose.position.z = z_lpf.output();
     };
 
