@@ -55,6 +55,25 @@ int main(int argc, char **argv)
     string hyperparam_path = argv[1];
     cv::FileStorage param(hyperparam_path, cv::FileStorage::READ);
 
+    int ros_logger_level = param["ros_logger_level"];
+    switch (ros_logger_level)
+    {
+    case 0:
+        ros::console::set_logger_level(ROSCONSOLE_DEFAULT_NAME, ros::console::levels::Debug);
+        break;
+    case 1:
+        ros::console::set_logger_level(ROSCONSOLE_DEFAULT_NAME, ros::console::levels::Info);
+        break;
+    case 2:
+        ros::console::set_logger_level(ROSCONSOLE_DEFAULT_NAME, ros::console::levels::Warn);
+        break;
+    case 3:
+        ros::console::set_logger_level(ROSCONSOLE_DEFAULT_NAME, ros::console::levels::Error);
+        break;
+    default:
+        break;
+    }
+
     //************* Data sources *************//
     DataSrc<nav_msgs::Odometry> vins_odom_src(nh, param["vins_odom_topic"], param["vins_odom_freq"], param["vins_odom_timeout"]);
     DataSrc<nav_msgs::Odometry> msckf_odom_src(nh, param["msckf_odom_topic"], param["msckf_odom_freq"], param["msckf_odom_timeout"]);
@@ -589,9 +608,9 @@ int main(int argc, char **argv)
     bool allow_px4ctrl_cmd_ctrl = true;
     ros::ServiceClient set_cmd_ctrl_permission_srv = nh.serviceClient<std_srvs::SetBool>(param["set_px4ctrl_cmd_ctrl_permission_service"]);
 
+    bool inform_bad_odom = true;
     while (ros::ok())
     {
-        bool inform_bad_odom = true;
         switch (state)
         {
         case FsmState::WAIT_FOR_FCU_ODOM:
@@ -870,7 +889,9 @@ int main(int argc, char **argv)
                     {
                         ros::Rate r(est_z_rate);
                         bool first_z_est = true;
-                        double prev_z_est;
+                        double prev_z_est, prev_z_revised;
+                        bool inform_insufficient_pts = true;
+                        bool inform_bad_ground_shape = true;
                         while (ros::ok())
                         {
                             bool ground_smooth = tof_src.isStarted() && tof_continuity_check.isPassed();
@@ -935,9 +956,15 @@ int main(int argc, char **argv)
 
                                 if (ground_pts.size() < 8)
                                 {
-                                    ROS_WARN_STREAM("[Odom Fusion] Only " << ids.size() << " (< 8) ground points found around hit point of the ToF sensor. Terminate map-based z estimation #^#");
+                                    if (inform_insufficient_pts)
+                                    {
+                                        ROS_WARN_STREAM("[Odom Fusion] Only " << ids.size() << " (< 8) ground points found around hit point of the ToF sensor. Terminate map-based z estimation #^#");
+                                        inform_insufficient_pts = false;
+                                    }
                                     goto end_z_est;
                                 }
+                                else
+                                    inform_insufficient_pts = true;
 
                                 // 🥳🥳🥳 PCA 🥳🥳🥳
                                 Vector3d centroid;
@@ -951,7 +978,7 @@ int main(int argc, char **argv)
 
                                 JacobiSVD<MatrixXd> svd(centered_pts, ComputeThinU | ComputeThinV);
                                 Vector3d singular_values = svd.singularValues();
-                                ROS_INFO_STREAM("[Odom Fusion] Singular values of the ground (" << ids.size() << " points) around the ToF hit point: " << singular_values.transpose() << "  Normal: " << svd.matrixU().col(2).transpose());
+                                ROS_DEBUG_STREAM("[Odom Fusion] Singular values of the ground (" << ids.size() << " points) around the ToF hit point: " << singular_values.transpose() << "  Normal: " << svd.matrixU().col(2).transpose());
                                 if (publish_debug_topic)
                                 {
                                     geometry_msgs::Vector3 singular_values_msg;
@@ -965,9 +992,15 @@ int main(int argc, char **argv)
                                      singular_values(2) > max_3rd_singular_value) &&
                                     (singular_values(1) / singular_values(2)) < 4)
                                 {
-                                    ROS_WARN("[Odom Fusion] Ground around the ToF hit point is not like a plane. Terminate map-based z estimation #^#");
+                                    if (inform_bad_ground_shape)
+                                    {
+                                        ROS_WARN("[Odom Fusion] Ground around the ToF hit point is not like a plane. Terminate map-based z estimation #^#");
+                                        inform_bad_ground_shape = false;
+                                    }
                                     goto end_z_est;
                                 }
+                                else
+                                    inform_bad_ground_shape = true;
 
                                 Vector3d normal = svd.matrixU().col(2);
                                 double normal_tilt_angle = acos(std::clamp(normal.dot(Vector3d::UnitZ()) / normal.norm(), -1.0, 1.0));
@@ -987,13 +1020,16 @@ int main(int argc, char **argv)
                                 if (first_z_est)
                                 {
                                     prev_z_est = z_est;
+                                    prev_z_revised = z_lpf.output();
                                     first_z_est = false;
                                 }
                                 else
                                 {
-                                    if (abs(z_est - prev_z_est) > 0.250)
+                                    double z_est_diff = z_est - prev_z_est;
+                                    double z_revised_diff = z_lpf.output() - prev_z_revised;
+                                    if (abs(z_est_diff - z_revised_diff) > 0.250)
                                     {
-                                        ROS_WARN_STREAM("[Odom Fusion] Exception in z estimation (z jump = " << abs(z_est - prev_z_est) << "m) #^#");
+                                        ROS_WARN_STREAM("[Odom Fusion] Exception in z estimation (diff of z diff = " << abs(z_est - prev_z_est) << "m) #^#");
                                         z_est_updated = false;
                                         first_z_est = true;
                                     }
@@ -1001,6 +1037,7 @@ int main(int argc, char **argv)
                                     {
                                         z_est_updated = true;
                                         prev_z_est = z_est;
+                                        prev_z_revised = z_lpf.output();
 
                                         if (publish_debug_topic)
                                         {

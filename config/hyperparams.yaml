@@ -10,6 +10,7 @@ max_delta_z_tof: 0.05
 cutoff_frequency_z: 1.0
 max_delta_z: 0.05
 
+ros_logger_level: 1  # 0: Debug  1: Info  2: Warn  3: Error
 publish_debug_topic: 1
 
 # Data src 0
