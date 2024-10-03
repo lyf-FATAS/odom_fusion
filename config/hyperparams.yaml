@@ -5,8 +5,8 @@ est_z_rate: 2.0
 kdtree_search_radius: 1.0
 min_2nd_singular_value: 0.77
 max_3rd_singular_value: 0.52
-cutoff_frequency_z_tof: 1.0
-max_delta_z_tof: 0.05
+cutoff_frequency_z_tof: 52.0
+max_delta_z_tof: 0.13
 cutoff_frequency_z: 1.0
 max_delta_z: 0.05
 
@@ -45,7 +45,7 @@ max_x_takeoff:  250.0
 min_y_takeoff: -250.0
 max_y_takeoff:  250.0
 min_z_takeoff: -0.5
-max_z_takeoff:  2.0
+max_z_takeoff:  5.0
 
 min_x: -100.0
 max_x:  100.0

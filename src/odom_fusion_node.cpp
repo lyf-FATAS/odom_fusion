@@ -464,25 +464,21 @@ int main(int argc, char **argv)
     };
 
     int Z_mode = param["Z_mode"];
+    LowPassFilter<double> z_lpf((double)param["cutoff_frequency_z"], (double)param["max_delta_z"]);
 
     // Z_mode == 1: use z from ToF
-    double delta_z_from_tof = 0.0;
-    LowPassFilter<double> z_tof_lpf((double)param["cutoff_frequency_z_tof"], (double)param["max_delta_z_tof"]);
-    double reset_delay = param["tof_jump_cooling_time"];
-    LowPassFilter<double> z_lpf((double)param["cutoff_frequency_z"], (double)param["max_delta_z"]);
-    double prev_z_tof_time;
+    double prev_z, prev_z_tof, prev_z_vio;
+    double delta_z = 0.0;
+    bool first_enter = true;
+    bool first_z_tof = true;
+    bool z_tof_ok = false;
     auto useZFromToF = [&](nav_msgs::Odometry &odom_output)
     {
-        // When enabling /use_sim_time and playing rosbag with --clock, ros::Time::now() is only updated at 100Hz 😤😤😤
-        double now_in_seconds = chrono::duration_cast<chrono::duration<double>>(chrono::high_resolution_clock::now().time_since_epoch()).count();
-
+        double z_vio = odom_output.pose.pose.position.z;
+        
         bool ground_smooth = tof_src.isStarted() && tof_continuity_check.isPassed();
         if (ground_smooth)
         {
-            if (now_in_seconds - prev_z_tof_time > reset_delay)
-                z_tof_lpf.reset();
-            prev_z_tof_time = now_in_seconds;
-
             double tof_dist = tof_src.getLatestDataCopy().distance;
             Vector3d tof_vec_body(0.0, 0.0, -tof_dist);
 
@@ -493,16 +489,62 @@ int main(int argc, char **argv)
             if (acos((current_q * Vector3d::UnitZ()).dot(Vector3d::UnitZ())) > (M_PI / 7))
             {
                 ROS_ERROR("[Odom Fusion] Excessive drone attitude !!! Terminate ToF z correction #^#");
+                z_tof_ok = false;
+                first_z_tof = true;
                 goto end_z_tof;
             }
             Vector3d tof_vec_world = current_q * tof_vec_body;
-            z_tof_lpf.input(abs(tof_vec_world.z()), now_in_seconds);
-            delta_z_from_tof = z_tof_lpf.output() - odom_output.pose.pose.position.z;
+            double z_tof = abs(tof_vec_world.z());
+
+            if (first_z_tof)
+            {
+                prev_z_tof = z_tof;
+                first_z_tof = false;
+            }
+            else
+            {
+                double z_tof_diff = z_tof - prev_z_tof;
+                double z_vio_diff = z_vio - prev_z_vio;
+                if (abs(z_tof_diff - z_vio_diff) > 0.13)
+                {
+                    ROS_WARN_STREAM("[Odom Fusion] Exception in z from ToF (diff of speed.z = " << abs(z_tof_diff - z_vio_diff) << "m) #^#");
+                    z_tof_ok = false;
+                    first_z_tof = true;
+                }
+                else
+                {
+                    delta_z = z_tof - prev_z_tof;
+
+                    z_tof_ok = true;
+                    prev_z_tof = z_tof;
+                }
+            }
+        }
+        else
+        {
+            z_tof_ok = false;
+            first_z_tof = true;
         }
     end_z_tof:
 
-        z_lpf.input(odom_output.pose.pose.position.z + delta_z_from_tof, now_in_seconds);
+        if (first_enter)
+        {
+            prev_z = z_vio;
+            first_enter = false;
+        }
+        else
+        {
+            if (!z_tof_ok)
+                delta_z = z_vio - prev_z_vio;
+        }
+
+        // When enabling /use_sim_time and playing rosbag with --clock, ros::Time::now() is only updated at 100Hz 😤😤😤
+        double now_in_seconds = chrono::duration_cast<chrono::duration<double>>(chrono::high_resolution_clock::now().time_since_epoch()).count();
+        z_lpf.input(prev_z + delta_z, now_in_seconds);
         odom_output.pose.pose.position.z = z_lpf.output();
+
+        prev_z = prev_z + delta_z;
+        prev_z_vio = z_vio;
     };
 
     // Z_mode == 2: estimate z from lidar map
@@ -531,12 +573,15 @@ int main(int argc, char **argv)
 
     thread est_z_from_lidar_map_thread;
     atomic<double> z_est(0.0);
+    atomic<double> z_vio_latest(-23333.33);
     atomic<bool> z_est_updated(false);
+
     PointCloud<PointXYZ>::Ptr cloud(new PointCloud<PointXYZ>);
     KdTreeFLANN<PointXYZ> kdtree;
     double search_radius = param["kdtree_search_radius"];
     double min_2nd_singular_value = param["min_2nd_singular_value"];
     double max_3rd_singular_value = param["max_3rd_singular_value"];
+
     bool publish_debug_topic = (int)param["publish_debug_topic"];
     ros::Publisher debug_map_pub = nh.advertise<sensor_msgs::PointCloud2>("map", 10);
     ros::Publisher debug_ground_search_point_pub = nh.advertise<geometry_msgs::PointStamped>("ground_search_point", 10);
@@ -571,12 +616,12 @@ int main(int argc, char **argv)
         }
         kdtree.setInputCloud(cloud);
     }
+
     double delta_z_from_est = 0.0;
     auto estZFromLidarMap = [&](nav_msgs::Odometry &odom_output)
     {
-        // When enabling /use_sim_time and playing rosbag with --clock, ros::Time::now() is only updated at 100Hz 😤😤😤
-        double now_in_seconds = chrono::duration_cast<chrono::duration<double>>(chrono::high_resolution_clock::now().time_since_epoch()).count();
-
+        z_vio_latest = odom_output.pose.pose.position.z;
+        
         bool ground_smooth = tof_src.isStarted() && tof_continuity_check.isPassed();
         if (ground_smooth && z_est_updated)
         {
@@ -584,6 +629,8 @@ int main(int argc, char **argv)
             z_est_updated = false;
         }
 
+        // When enabling /use_sim_time and playing rosbag with --clock, ros::Time::now() is only updated at 100Hz 😤😤😤
+        double now_in_seconds = chrono::duration_cast<chrono::duration<double>>(chrono::high_resolution_clock::now().time_since_epoch()).count();
         z_lpf.input(odom_output.pose.pose.position.z + delta_z_from_est, now_in_seconds);
         odom_output.pose.pose.position.z = z_lpf.output();
     };
@@ -883,13 +930,13 @@ int main(int argc, char **argv)
 
         case FsmState::FLY_WITH_VINS:
         {
-            if (!est_z_from_lidar_map_thread.joinable() && Z_mode == 2)
+            if (!est_z_from_lidar_map_thread.joinable() && Z_mode == 2 && z_vio_latest > -23333.3)
                 est_z_from_lidar_map_thread = thread(
                     [&]()
                     {
                         ros::Rate r(est_z_rate);
                         bool first_z_est = true;
-                        double prev_z_est, prev_z_revised;
+                        double prev_z_est, prev_z_vio;
                         bool inform_insufficient_pts = true;
                         bool inform_bad_ground_shape = true;
                         while (ros::ok())
@@ -1020,16 +1067,16 @@ int main(int argc, char **argv)
                                 if (first_z_est)
                                 {
                                     prev_z_est = z_est;
-                                    prev_z_revised = z_lpf.output();
+                                    prev_z_vio = z_vio_latest;
                                     first_z_est = false;
                                 }
                                 else
                                 {
                                     double z_est_diff = z_est - prev_z_est;
-                                    double z_revised_diff = z_lpf.output() - prev_z_revised;
-                                    if (abs(z_est_diff - z_revised_diff) > 0.250)
+                                    double z_vio_diff = z_vio_latest - prev_z_vio;
+                                    if (abs(z_est_diff - z_vio_diff) > 0.13)
                                     {
-                                        ROS_WARN_STREAM("[Odom Fusion] Exception in z estimation (diff of z diff = " << abs(z_est - prev_z_est) << "m) #^#");
+                                        ROS_WARN_STREAM("[Odom Fusion] Exception in z estimation (diff of speed.z = " << abs(z_est_diff - z_vio_diff) << "m) #^#");
                                         z_est_updated = false;
                                         first_z_est = true;
                                     }
@@ -1037,7 +1084,7 @@ int main(int argc, char **argv)
                                     {
                                         z_est_updated = true;
                                         prev_z_est = z_est;
-                                        prev_z_revised = z_lpf.output();
+                                        prev_z_vio = z_vio_latest;
 
                                         if (publish_debug_topic)
                                         {
