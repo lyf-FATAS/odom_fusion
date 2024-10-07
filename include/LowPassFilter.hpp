@@ -4,6 +4,7 @@
 #include <math.h>
 #include <Eigen/Dense>
 
+using namespace std;
 using Eigen::Quaterniond;
 
 template <typename T>
