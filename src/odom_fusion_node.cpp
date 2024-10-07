@@ -463,92 +463,36 @@ int main(int argc, char **argv)
         odom.twist.twist.linear.z = v_world.z();
     };
 
-    int Z_mode = param["Z_mode"];
+    //************* Z Correction With ToF or Lidar Map *************//
+    int Z_correction_mode = param["Z_correction_mode"];
+    double est_z_rate = param["est_z_rate"];
     LowPassFilter<double> z_lpf((double)param["cutoff_frequency_z"], (double)param["max_delta_z"]);
+    atomic<double> z_vio_latest(-23333.33);
 
-    // Z_mode == 1: use z from ToF
-    double prev_z, prev_z_tof, prev_z_vio;
-    double delta_z = 0.0;
-    bool first_enter = true;
-    bool first_z_tof = true;
-    bool z_tof_ok = false;
+    // Z_correction_mode == 1: use z from ToF
+    thread est_z_from_tof_thread;
+    atomic<double> delta_z_from_tof(0.0);
+
+    mutex latest_q_mtx;
+    Quaterniond latest_q;
     auto useZFromToF = [&](nav_msgs::Odometry &odom_output)
     {
-        double z_vio = odom_output.pose.pose.position.z;
-        
-        bool ground_smooth = tof_src.isStarted() && tof_continuity_check.isPassed();
-        if (ground_smooth)
+        z_vio_latest = odom_output.pose.pose.position.z;
         {
-            double tof_dist = tof_src.getLatestDataCopy().distance;
-            Vector3d tof_vec_body(0.0, 0.0, -tof_dist);
-
-            Quaterniond current_q(odom_output.pose.pose.orientation.w,
-                                  odom_output.pose.pose.orientation.x,
-                                  odom_output.pose.pose.orientation.y,
-                                  odom_output.pose.pose.orientation.z);
-            if (acos((current_q * Vector3d::UnitZ()).dot(Vector3d::UnitZ())) > (M_PI / 7))
-            {
-                ROS_ERROR("[Odom Fusion] Excessive drone attitude !!! Terminate ToF z correction #^#");
-                z_tof_ok = false;
-                first_z_tof = true;
-                goto end_z_tof;
-            }
-            Vector3d tof_vec_world = current_q * tof_vec_body;
-            double z_tof = abs(tof_vec_world.z());
-
-            if (first_z_tof)
-            {
-                prev_z_tof = z_tof;
-                first_z_tof = false;
-            }
-            else
-            {
-                double z_tof_diff = z_tof - prev_z_tof;
-                double z_vio_diff = z_vio - prev_z_vio;
-                if (abs(z_tof_diff - z_vio_diff) > 0.13)
-                {
-                    ROS_WARN_STREAM("[Odom Fusion] Exception in z from ToF (diff of speed.z = " << abs(z_tof_diff - z_vio_diff) << "m) #^#");
-                    z_tof_ok = false;
-                    first_z_tof = true;
-                }
-                else
-                {
-                    delta_z = z_tof - prev_z_tof;
-
-                    z_tof_ok = true;
-                    prev_z_tof = z_tof;
-                }
-            }
-        }
-        else
-        {
-            z_tof_ok = false;
-            first_z_tof = true;
-        }
-    end_z_tof:
-
-        if (first_enter)
-        {
-            prev_z = z_vio;
-            first_enter = false;
-        }
-        else
-        {
-            if (!z_tof_ok)
-                delta_z = z_vio - prev_z_vio;
+            lock_guard<mutex> lock(latest_q_mtx);
+            latest_q = Quaterniond(odom_output.pose.pose.orientation.w,
+                                    odom_output.pose.pose.orientation.x,
+                                    odom_output.pose.pose.orientation.y,
+                                    odom_output.pose.pose.orientation.z);
         }
 
         // When enabling /use_sim_time and playing rosbag with --clock, ros::Time::now() is only updated at 100Hz 😤😤😤
         double now_in_seconds = chrono::duration_cast<chrono::duration<double>>(chrono::high_resolution_clock::now().time_since_epoch()).count();
-        z_lpf.input(prev_z + delta_z, now_in_seconds);
+        z_lpf.input(odom_output.pose.pose.position.z + delta_z_from_tof, now_in_seconds);
         odom_output.pose.pose.position.z = z_lpf.output();
-
-        prev_z = prev_z + delta_z;
-        prev_z_vio = z_vio;
     };
 
-    // Z_mode == 2: estimate z from lidar map
-    double est_z_rate = param["est_z_rate"];
+    // Z_correction_mode == 2: estimate z from lidar map
     bool recv_revised_odom = false;
     mutex revised_odom_mtx;
     Vector3d latest_revised_p;
@@ -573,7 +517,6 @@ int main(int argc, char **argv)
 
     thread est_z_from_lidar_map_thread;
     atomic<double> z_est(0.0);
-    atomic<double> z_vio_latest(-23333.33);
     atomic<bool> z_est_updated(false);
 
     PointCloud<PointXYZ>::Ptr cloud(new PointCloud<PointXYZ>);
@@ -581,6 +524,7 @@ int main(int argc, char **argv)
     double search_radius = param["kdtree_search_radius"];
     double min_2nd_singular_value = param["min_2nd_singular_value"];
     double max_3rd_singular_value = param["max_3rd_singular_value"];
+    double lidar2tof_z_offset = param["lidar2tof_z_offset"];
 
     bool publish_debug_topic = (int)param["publish_debug_topic"];
     ros::Publisher debug_map_pub = nh.advertise<sensor_msgs::PointCloud2>("map", 10);
@@ -588,7 +532,7 @@ int main(int argc, char **argv)
     ros::Publisher debug_local_ground_pub = nh.advertise<sensor_msgs::PointCloud2>("local_ground", 10);
     ros::Publisher debug_singular_value_pub = nh.advertise<geometry_msgs::Vector3>("singular_values", 10);
     ros::Publisher debug_z_est_pub = nh.advertise<std_msgs::Float32>("z_est", 10);
-    if (Z_mode == 2)
+    if (Z_correction_mode == 2)
     {
         revised_odom_sub =
             nh.subscribe<nav_msgs::Odometry>(param["revised_odom_topic"], 1000,
@@ -621,7 +565,7 @@ int main(int argc, char **argv)
     auto estZFromLidarMap = [&](nav_msgs::Odometry &odom_output)
     {
         z_vio_latest = odom_output.pose.pose.position.z;
-        
+
         bool ground_smooth = tof_src.isStarted() && tof_continuity_check.isPassed();
         if (ground_smooth && z_est_updated)
         {
@@ -776,7 +720,7 @@ int main(int argc, char **argv)
 
                                 applySmoother(latest_vins_odom);
 
-                                switch (Z_mode)
+                                switch (Z_correction_mode)
                                 {
                                 case 0:
                                     break;
@@ -799,7 +743,7 @@ int main(int argc, char **argv)
 
                                 applySmoother(latest_msckf_odom);
 
-                                switch (Z_mode)
+                                switch (Z_correction_mode)
                                 {
                                 case 0:
                                     break;
@@ -825,7 +769,7 @@ int main(int argc, char **argv)
                                 applySmoother(latest_fcu_odom_debiased);
                                 toWorldVel(latest_fcu_odom_debiased);
 
-                                switch (Z_mode)
+                                switch (Z_correction_mode)
                                 {
                                 case 0:
                                     break;
@@ -930,7 +874,7 @@ int main(int argc, char **argv)
 
         case FsmState::FLY_WITH_VINS:
         {
-            if (!est_z_from_lidar_map_thread.joinable() && Z_mode == 2 && z_vio_latest > -23333.3)
+            if (!est_z_from_lidar_map_thread.joinable() && Z_correction_mode == 2 && z_vio_latest > -23333.3)
                 est_z_from_lidar_map_thread = thread(
                     [&]()
                     {
@@ -1059,7 +1003,7 @@ int main(int argc, char **argv)
                                     goto end_z_est;
                                 }
 
-                                double z_ground = centroid.z();
+                                double z_ground = centroid.z() + lidar2tof_z_offset;
 
                                 //************* 3. Estimate z *************//
                                 z_est = z_to_ground + z_ground;
@@ -1096,6 +1040,63 @@ int main(int argc, char **argv)
                                 }
                             }
                         end_z_est:
+                            r.sleep();
+                        }
+                    });
+
+            if (!est_z_from_tof_thread.joinable() && Z_correction_mode == 1 && z_vio_latest > -23333.3)
+                est_z_from_tof_thread = thread(
+                    [&]()
+                    {
+                        ros::Rate r(est_z_rate);
+                        bool first_z_tof = true;
+                        double prev_z_tof, prev_z_vio, prev_z;
+                        while (ros::ok())
+                        {
+                            bool ground_smooth = tof_src.isStarted() && tof_continuity_check.isPassed();
+                            if (ground_smooth)
+                            {
+                                {
+                                    lock_guard<mutex> lock(latest_q_mtx);
+                                    if (acos((latest_q * Vector3d::UnitZ()).dot(Vector3d::UnitZ())) > (M_PI / 7))
+                                    {
+                                        ROS_ERROR("[Odom Fusion] Excessive drone attitude !!! Terminate ToF z correction #^#");
+                                        goto end_z_tof;
+                                    }
+                                }
+
+                                double tof_dist = tof_src.getLatestDataCopy().distance;
+                                Vector3d tof_vec_body(0.0, 0.0, -tof_dist);
+                                Vector3d tof_vec_world = latest_q * tof_vec_body;
+                                double z_tof = abs(tof_vec_world.z());
+
+                                if (first_z_tof)
+                                {
+                                    prev_z_tof = z_tof;
+                                    prev_z_vio = z_vio_latest;
+                                    prev_z = z_lpf.output();
+                                    first_z_tof = false;
+                                }
+                                else
+                                {
+                                    double z_tof_diff = z_tof - prev_z_tof;
+                                    double z_vio_diff = z_vio_latest - prev_z_vio;
+                                    if (abs(z_tof_diff - z_vio_diff) > 0.13)
+                                    {
+                                        ROS_WARN_STREAM("[Odom Fusion] Exception in z from ToF (diff of speed.z = " << abs(z_tof_diff - z_vio_diff) << "m) #^#");
+                                        first_z_tof = true;
+                                    }
+                                    else
+                                    {
+                                        delta_z_from_tof = (z_tof - prev_z_tof) - (z_lpf.output() - prev_z);
+
+                                        prev_z_tof = z_tof;
+                                        prev_z_vio = z_vio_latest;
+                                        prev_z = z_lpf.output();
+                                    }
+                                }
+                            }
+                        end_z_tof:
                             r.sleep();
                         }
                     });

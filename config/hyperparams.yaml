@@ -1,12 +1,11 @@
 %YAML:1.0
 
-Z_mode: 2  # 0: z from vio  1: z from ToF  2: estimate z from lidar map
+Z_correction_mode: 2  # 0: z from vio  1: z from ToF  2: estimate z from lidar map
 est_z_rate: 2.0
 kdtree_search_radius: 1.0
 min_2nd_singular_value: 0.77
 max_3rd_singular_value: 0.52
-cutoff_frequency_z_tof: 52.0
-max_delta_z_tof: 0.13
+lidar2tof_z_offset: 0.3
 cutoff_frequency_z: 1.0
 max_delta_z: 0.05
 
