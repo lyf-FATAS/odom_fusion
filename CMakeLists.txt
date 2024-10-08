@@ -31,6 +31,8 @@ find_package(catkin REQUIRED COMPONENTS
 find_package(OpenCV REQUIRED)
 find_package(Boost REQUIRED)
 find_package(PCL REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(glog REQUIRED libglog)
 
 ## Uncomment this if the package has a setup.py. This macro ensures
 ## modules and global scripts declared therein get installed
@@ -136,6 +138,7 @@ include_directories(
     ${OpenCV_INCLUDE_DIRS}
     ${Boost_INCLUDE_DIRS}
     ${PCL_INCLUDE_DIRS}
+    ${glog_INCLUDE_DIRS}
 )
 
 ## Declare a C++ library
@@ -169,6 +172,7 @@ target_link_libraries(${PROJECT_NAME}_node
     ${OpenCV_LIBRARIES}
     ${Boost_LIBRARIES}
     ${PCL_LIBRARIES}
+    ${glog_LIBRARIES}
 )
 
 #############

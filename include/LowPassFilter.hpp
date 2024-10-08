@@ -3,6 +3,7 @@
 #include <mutex>
 #include <math.h>
 #include <Eigen/Dense>
+#include <glog/logging.h>
 
 using namespace std;
 using Eigen::Quaterniond;
@@ -77,6 +78,9 @@ public:
 
     T output()
     {
+        if (!initialized)
+            LOG(ERROR) << "Accessing the output when the low-pass filter is not initialized #^# You will get a random value @_@";
+
         lock_guard<mutex> lock(y_mtx);
         return y_prev;
     }
@@ -155,6 +159,9 @@ public:
 
     Quaterniond output()
     {
+        if (!initialized)
+            LOG(ERROR) << "Accessing the output when the low-pass filter is not initialized #^# You will get a random value @_@";
+
         lock_guard<mutex> lock(y_mtx);
         return y_prev;
     }

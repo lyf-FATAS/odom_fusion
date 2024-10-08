@@ -319,7 +319,7 @@ int main(int argc, char **argv)
                                                      case FsmState::TAKEOFF:
                                                      {
                                                          state = FsmState::FLY_WITH_VINS;
-                                                         ROS_INFO("[Odom Fusion] \033[32mTakeoff done ^v^");
+                                                         ROS_INFO("[Odom Fusion] \033[32mTakeoff done ^v^ \033[43;30mTAKEOFF\033[0m --> \033[43;30mFLY_WITH_VINS\033[0m :)");
                                                          break;
                                                      }
                                                      case FsmState::FLY_WITH_VINS:
@@ -466,8 +466,10 @@ int main(int argc, char **argv)
     //************* Z Correction With ToF or Lidar Map *************//
     int Z_correction_mode = param["Z_correction_mode"];
     double est_z_rate = param["est_z_rate"];
-    LowPassFilter<double> z_lpf((double)param["cutoff_frequency_z"], (double)param["max_delta_z"]);
+    LowPassFilter<double> z_lpf(param["cutoff_frequency_z"], param["max_delta_z"]);
     atomic<double> z_vio_latest(-23333.33);
+    bool publish_debug_topic = (int)param["publish_debug_topic"];
+    ros::Publisher debug_z_est_pub = nh.advertise<std_msgs::Float32>("z_est", 10);
 
     // Z_correction_mode == 1: use z from ToF
     thread est_z_from_tof_thread;
@@ -481,9 +483,9 @@ int main(int argc, char **argv)
         {
             lock_guard<mutex> lock(latest_q_mtx);
             latest_q = Quaterniond(odom_output.pose.pose.orientation.w,
-                                    odom_output.pose.pose.orientation.x,
-                                    odom_output.pose.pose.orientation.y,
-                                    odom_output.pose.pose.orientation.z);
+                                   odom_output.pose.pose.orientation.x,
+                                   odom_output.pose.pose.orientation.y,
+                                   odom_output.pose.pose.orientation.z);
         }
 
         // When enabling /use_sim_time and playing rosbag with --clock, ros::Time::now() is only updated at 100Hz 😤😤😤
@@ -526,12 +528,10 @@ int main(int argc, char **argv)
     double max_3rd_singular_value = param["max_3rd_singular_value"];
     double lidar2tof_z_offset = param["lidar2tof_z_offset"];
 
-    bool publish_debug_topic = (int)param["publish_debug_topic"];
     ros::Publisher debug_map_pub = nh.advertise<sensor_msgs::PointCloud2>("map", 10);
     ros::Publisher debug_ground_search_point_pub = nh.advertise<geometry_msgs::PointStamped>("ground_search_point", 10);
     ros::Publisher debug_local_ground_pub = nh.advertise<sensor_msgs::PointCloud2>("local_ground", 10);
     ros::Publisher debug_singular_value_pub = nh.advertise<geometry_msgs::Vector3>("singular_values", 10);
-    ros::Publisher debug_z_est_pub = nh.advertise<std_msgs::Float32>("z_est", 10);
     if (Z_correction_mode == 2)
     {
         revised_odom_sub =
@@ -874,6 +874,72 @@ int main(int argc, char **argv)
 
         case FsmState::FLY_WITH_VINS:
         {
+            if (!est_z_from_tof_thread.joinable() && Z_correction_mode == 1 && z_vio_latest > -23333.3)
+                est_z_from_tof_thread = thread(
+                    [&]()
+                    {
+                        ros::Rate r(est_z_rate);
+                        bool first_z_tof_ = true;
+                        double first_z_tof, first_z_vio, prev_z_tof, prev_z_vio;
+                        while (ros::ok())
+                        {
+                            bool ground_smooth = tof_src.isStarted() && tof_continuity_check.isPassed();
+                            if (ground_smooth)
+                            {
+                                {
+                                    lock_guard<mutex> lock(latest_q_mtx);
+                                    if (acos((latest_q * Vector3d::UnitZ()).dot(Vector3d::UnitZ())) > (M_PI / 7))
+                                    {
+                                        ROS_ERROR("[Odom Fusion] Excessive drone attitude !!! Terminate ToF z correction #^#");
+                                        goto end_z_tof;
+                                    }
+                                }
+
+                                double tof_dist = tof_src.getLatestDataCopy().distance;
+                                Vector3d tof_vec_body(0.0, 0.0, -tof_dist);
+                                Vector3d tof_vec_world = latest_q * tof_vec_body;
+                                double z_tof = abs(tof_vec_world.z());
+
+                                if (first_z_tof_)
+                                {
+                                    first_z_tof = prev_z_tof = z_tof;
+                                    first_z_vio = prev_z_vio = z_vio_latest;
+                                    first_z_tof_ = false;
+                                }
+                                else
+                                {
+                                    double z_tof_diff = z_tof - prev_z_tof;
+                                    double z_vio_diff = z_vio_latest - prev_z_vio;
+                                    if (abs(z_tof_diff - z_vio_diff) > 0.13)
+                                    {
+                                        ROS_WARN_STREAM("[Odom Fusion] Exception in z from ToF (diff of speed.z = " << abs(z_tof_diff - z_vio_diff) << "m) #^#");
+                                        first_z_tof_ = true;
+                                    }
+                                    else
+                                    {
+                                        delta_z_from_tof = (z_tof - first_z_tof) - (z_vio_latest - first_z_vio);
+
+                                        prev_z_tof = z_tof;
+                                        prev_z_vio = z_vio_latest;
+
+                                        if (publish_debug_topic)
+                                        {
+                                            std_msgs::Float32 z_est_msg;
+                                            z_est_msg.data = z_tof;
+                                            debug_z_est_pub.publish(z_est_msg);
+                                        }
+                                    }
+                                }
+                            }
+                            else
+                            {
+                                first_z_tof_ = true;
+                            }
+                        end_z_tof:
+                            r.sleep();
+                        }
+                    });
+
             if (!est_z_from_lidar_map_thread.joinable() && Z_correction_mode == 2 && z_vio_latest > -23333.3)
                 est_z_from_lidar_map_thread = thread(
                     [&]()
@@ -1040,63 +1106,6 @@ int main(int argc, char **argv)
                                 }
                             }
                         end_z_est:
-                            r.sleep();
-                        }
-                    });
-
-            if (!est_z_from_tof_thread.joinable() && Z_correction_mode == 1 && z_vio_latest > -23333.3)
-                est_z_from_tof_thread = thread(
-                    [&]()
-                    {
-                        ros::Rate r(est_z_rate);
-                        bool first_z_tof = true;
-                        double prev_z_tof, prev_z_vio, prev_z;
-                        while (ros::ok())
-                        {
-                            bool ground_smooth = tof_src.isStarted() && tof_continuity_check.isPassed();
-                            if (ground_smooth)
-                            {
-                                {
-                                    lock_guard<mutex> lock(latest_q_mtx);
-                                    if (acos((latest_q * Vector3d::UnitZ()).dot(Vector3d::UnitZ())) > (M_PI / 7))
-                                    {
-                                        ROS_ERROR("[Odom Fusion] Excessive drone attitude !!! Terminate ToF z correction #^#");
-                                        goto end_z_tof;
-                                    }
-                                }
-
-                                double tof_dist = tof_src.getLatestDataCopy().distance;
-                                Vector3d tof_vec_body(0.0, 0.0, -tof_dist);
-                                Vector3d tof_vec_world = latest_q * tof_vec_body;
-                                double z_tof = abs(tof_vec_world.z());
-
-                                if (first_z_tof)
-                                {
-                                    prev_z_tof = z_tof;
-                                    prev_z_vio = z_vio_latest;
-                                    prev_z = z_lpf.output();
-                                    first_z_tof = false;
-                                }
-                                else
-                                {
-                                    double z_tof_diff = z_tof - prev_z_tof;
-                                    double z_vio_diff = z_vio_latest - prev_z_vio;
-                                    if (abs(z_tof_diff - z_vio_diff) > 0.13)
-                                    {
-                                        ROS_WARN_STREAM("[Odom Fusion] Exception in z from ToF (diff of speed.z = " << abs(z_tof_diff - z_vio_diff) << "m) #^#");
-                                        first_z_tof = true;
-                                    }
-                                    else
-                                    {
-                                        delta_z_from_tof = (z_tof - prev_z_tof) - (z_lpf.output() - prev_z);
-
-                                        prev_z_tof = z_tof;
-                                        prev_z_vio = z_vio_latest;
-                                        prev_z = z_lpf.output();
-                                    }
-                                }
-                            }
-                        end_z_tof:
                             r.sleep();
                         }
                     });
