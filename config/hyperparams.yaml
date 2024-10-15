@@ -5,7 +5,7 @@ est_z_rate: 2.0
 kdtree_search_radius: 1.0
 min_2nd_singular_value: 0.77
 max_3rd_singular_value: 0.52
-lidar2tof_z_offset: 0.3
+lidar2tof_z_offset: 0.2
 cutoff_frequency_z: 1.0
 max_delta_z: 0.05
 
@@ -72,7 +72,7 @@ continuity_check_freq: 20.0
 pos_max_jump: 0.520
 pos_jump_cooling_time: 0.250
 
-tof_max_jump: 0.2
+tof_max_jump: 0.23
 tof_jump_cooling_time: 1.314
 
 # Check 4: imu amplitude check

@@ -39,7 +39,7 @@ using namespace pcl;
 
 enum FsmState
 {
-    WAIT_FOR_FCU_ODOM,
+    WAIT_FOR_VINS,
     CALIB_FCU_ODOM,
     TAKEOFF,
     FLY_WITH_VINS,
@@ -170,7 +170,7 @@ int main(int argc, char **argv)
     };
 
     //************* Main loop *************//
-    FsmState state(FsmState::WAIT_FOR_FCU_ODOM);
+    FsmState state(FsmState::WAIT_FOR_VINS);
     const double data_check_freq = max({10.0,
                                         (double)param["pos_mag_check_freq"],
                                         (double)param["tof_conservative_hgt_check_freq"],
@@ -221,10 +221,10 @@ int main(int argc, char **argv)
                                            {
                                                switch (state)
                                                {
-                                               case FsmState::WAIT_FOR_FCU_ODOM:
+                                               case FsmState::WAIT_FOR_VINS:
                                                case FsmState::CALIB_FCU_ODOM:
                                                {
-                                                   ROS_ERROR("[Odom Fusion] Fcu odometry is not ready. No odometry output and takeoff should fail #^#");
+                                                   ROS_ERROR("[Odom Fusion] Vins is not ready. No odometry output and takeoff should fail #^#");
                                                    break;
                                                }
                                                case FsmState::TAKEOFF:
@@ -257,10 +257,10 @@ int main(int argc, char **argv)
                                                   {
                                                       switch (state)
                                                       {
-                                                      case FsmState::WAIT_FOR_FCU_ODOM:
+                                                      case FsmState::WAIT_FOR_VINS:
                                                       case FsmState::CALIB_FCU_ODOM:
                                                       {
-                                                          ROS_ERROR("[Odom Fusion] Fcu odometry is not ready. No odometry output and takeoff should fail #^#");
+                                                          ROS_ERROR("[Odom Fusion] Vins is not ready. No odometry output and takeoff should fail #^#");
                                                           break;
                                                       }
                                                       case FsmState::TAKEOFF:
@@ -310,7 +310,7 @@ int main(int argc, char **argv)
 
                                                      switch (state)
                                                      {
-                                                     case FsmState::WAIT_FOR_FCU_ODOM:
+                                                     case FsmState::WAIT_FOR_VINS:
                                                      case FsmState::CALIB_FCU_ODOM:
                                                      {
                                                          ROS_ERROR("[Odom Fusion] \033[36mThe program should never reach here ^^");
@@ -604,104 +604,117 @@ int main(int argc, char **argv)
     {
         switch (state)
         {
-        case FsmState::WAIT_FOR_FCU_ODOM:
+        case FsmState::WAIT_FOR_VINS:
         {
-            if (calib_fcu_odom_thread.joinable())
-                calib_fcu_odom_thread.join();
-            if (fcu_odom_src.isStarted() && tof_src.isStarted())
+            // if (calib_fcu_odom_thread.joinable())
+            //     calib_fcu_odom_thread.join();
+            // if (fcu_odom_src.isStarted() && tof_src.isStarted())
+            // {
+            //     state = FsmState::CALIB_FCU_ODOM;
+            //     // FIXME: use GLOG please 😣😣😣
+            //     ROS_INFO_STREAM("[Odom Fusion] \033[43;30mWAIT_FOR_FCU_ODOM\033[0m --> \033[43;30mCALIB_FCU_ODOM\033[0m :)");
+            // }
+
+            bool inform_waiting_for_vins = true;
+            while (!vins_odom_src.isAvailable() && ros::ok())
             {
-                state = FsmState::CALIB_FCU_ODOM;
-                // FIXME: use GLOG please 😣😣😣
-                ROS_INFO_STREAM("[Odom Fusion] \033[43;30mWAIT_FOR_FCU_ODOM\033[0m --> \033[43;30mCALIB_FCU_ODOM\033[0m :)");
+                if (inform_waiting_for_vins)
+                {
+                    ROS_INFO_STREAM("[Odom Fusion] Waiting for vins ...");
+                    inform_waiting_for_vins = false;
+                }
+                this_thread::sleep_for(chrono::milliseconds(500));
             }
+            ROS_INFO_STREAM("[Odom Fusion] \033[43;30mWAIT_FOR_VINS\033[0m --> \033[43;30mTAKEOFF\033[0m :)");
+            state = FsmState::TAKEOFF;
             break;
         }
 
-        case FsmState::CALIB_FCU_ODOM:
-        {
-            if (!calib_fcu_odom_thread.joinable())
-                calib_fcu_odom_thread = thread(
-                    [&]()
-                    {
-                        double x_avg = 0.0, y_avg = 0.0, z_avg = 0.0, yaw_avg = 0.0;
-                        ros::Rate calib_proc_rate(fcu_odom_src.src_freq);
-                        double first_yaw = 0.0;
-                        for (size_t i = 1; ros::ok(); ++i)
-                        {
-                            // TODO: retrieve const ref not value
-                            nav_msgs::Odometry latest_fcu_odom = fcu_odom_src.getLatestDataCopy();
-                            double x = latest_fcu_odom.pose.pose.position.x;
-                            double y = latest_fcu_odom.pose.pose.position.y;
-                            double z = latest_fcu_odom.pose.pose.position.z;
-                            Matrix3d R = Quaterniond(latest_fcu_odom.pose.pose.orientation.w,
-                                                     latest_fcu_odom.pose.pose.orientation.x,
-                                                     latest_fcu_odom.pose.pose.orientation.y,
-                                                     latest_fcu_odom.pose.pose.orientation.z)
-                                             .toRotationMatrix();
-                            double yaw = atan2(R(1, 0), R(0, 0));
+        // case FsmState::CALIB_FCU_ODOM:
+        // {
+        //     if (!calib_fcu_odom_thread.joinable())
+        //         calib_fcu_odom_thread = thread(
+        //             [&]()
+        //             {
+        //                 double x_avg = 0.0, y_avg = 0.0, z_avg = 0.0, yaw_avg = 0.0;
+        //                 ros::Rate calib_proc_rate(fcu_odom_src.src_freq);
+        //                 double first_yaw = 0.0;
+        //                 for (size_t i = 1; ros::ok(); ++i)
+        //                 {
+        //                     // TODO: retrieve const ref not value
+        //                     nav_msgs::Odometry latest_fcu_odom = fcu_odom_src.getLatestDataCopy();
+        //                     double x = latest_fcu_odom.pose.pose.position.x;
+        //                     double y = latest_fcu_odom.pose.pose.position.y;
+        //                     double z = latest_fcu_odom.pose.pose.position.z;
+        //                     Matrix3d R = Quaterniond(latest_fcu_odom.pose.pose.orientation.w,
+        //                                              latest_fcu_odom.pose.pose.orientation.x,
+        //                                              latest_fcu_odom.pose.pose.orientation.y,
+        //                                              latest_fcu_odom.pose.pose.orientation.z)
+        //                                      .toRotationMatrix();
+        //                     double yaw = atan2(R(1, 0), R(0, 0));
 
-                            if (i != 1)
-                            {
-                                if (abs(x - x_avg) > 0.013 || abs(y - y_avg) > 0.013 || abs(z - z_avg) > 0.013 || abs(yaw - yaw_avg) > 0.013)
-                                {
-                                    ROS_ERROR("[Odom Fusion] \033[43;30mCALIB_FCU_ODOM\033[0m --> \033[43;30mWAIT_FOR_FCU_ODOM\033[0m Unstable initial z or yaw bias of fcu odometry, calibration restarted #^#");
-                                    state = FsmState::WAIT_FOR_FCU_ODOM;
-                                    break;
-                                }
+        //                     if (i != 1)
+        //                     {
+        //                         if (abs(x - x_avg) > 0.013 || abs(y - y_avg) > 0.013 || abs(z - z_avg) > 0.013 || abs(yaw - yaw_avg) > 0.013)
+        //                         {
+        //                             ROS_ERROR("[Odom Fusion] \033[43;30mCALIB_FCU_ODOM\033[0m --> \033[43;30mWAIT_FOR_FCU_ODOM\033[0m Unstable initial z or yaw bias of fcu odometry, calibration restarted #^#");
+        //                             state = FsmState::WAIT_FOR_FCU_ODOM;
+        //                             break;
+        //                         }
 
-                                if (abs(yaw) > 3.1015926)
-                                {
-                                    if (abs(first_yaw) < 1e-5)
-                                        first_yaw = yaw;
+        //                         if (abs(yaw) > 3.1015926)
+        //                         {
+        //                             if (abs(first_yaw) < 1e-5)
+        //                                 first_yaw = yaw;
 
-                                    if (yaw * first_yaw > 0)
-                                        ;
-                                    else
-                                        yaw *= -1;
+        //                             if (yaw * first_yaw > 0)
+        //                                 ;
+        //                             else
+        //                                 yaw *= -1;
 
-                                    ROS_WARN("[Odom Fusion] Initial yaw bias of fcu odometry is close to PI and -PI @_@");
-                                }
-                            }
+        //                             ROS_WARN("[Odom Fusion] Initial yaw bias of fcu odometry is close to PI and -PI @_@");
+        //                         }
+        //                     }
 
-                            x_avg += (x - x_avg) / i;
-                            y_avg += (y - y_avg) / i;
-                            z_avg += (z - z_avg) / i;
-                            yaw_avg += (yaw - yaw_avg) / i;
+        //                     x_avg += (x - x_avg) / i;
+        //                     y_avg += (y - y_avg) / i;
+        //                     z_avg += (z - z_avg) / i;
+        //                     yaw_avg += (yaw - yaw_avg) / i;
 
-                            if (i > 77) // or 250 or 520 or 1314
-                            {
-                                p_fcu_bias << x_avg, y_avg, z_avg;
-                                q_fcu_bias = Quaterniond(AngleAxisd(yaw_avg, Vector3d::UnitZ()));
-                                ROS_INFO_STREAM("[Odom Fusion] \033[32mCalibration finished \\^_^/ bias x = " << x_avg << "m, bias y = " << y_avg << "m, bias z = " << z_avg << "m, yaw = " << yaw_avg << "rad");
+        //                     if (i > 77) // or 250 or 520 or 1314
+        //                     {
+        //                         p_fcu_bias << x_avg, y_avg, z_avg;
+        //                         q_fcu_bias = Quaterniond(AngleAxisd(yaw_avg, Vector3d::UnitZ()));
+        //                         ROS_INFO_STREAM("[Odom Fusion] \033[32mCalibration finished \\^_^/ bias x = " << x_avg << "m, bias y = " << y_avg << "m, bias z = " << z_avg << "m, yaw = " << yaw_avg << "rad");
 
-                                bool inform_waiting_for_vins = true;
-                                while (!vins_odom_src.isAvailable() && ros::ok())
-                                {
-                                    if (inform_waiting_for_vins)
-                                    {
-                                        ROS_INFO_STREAM("[Odom Fusion] Waiting for vins ...");
-                                        inform_waiting_for_vins = false;
-                                    }
-                                    this_thread::sleep_for(chrono::milliseconds(500));
-                                }
-                                ROS_INFO_STREAM("[Odom Fusion] \033[43;30mCALIB_FCU_ODOM\033[0m --> \033[43;30mTAKEOFF\033[0m :)");
-                                state = FsmState::TAKEOFF;
-                                break;
-                            }
+        //                         bool inform_waiting_for_vins = true;
+        //                         while (!vins_odom_src.isAvailable() && ros::ok())
+        //                         {
+        //                             if (inform_waiting_for_vins)
+        //                             {
+        //                                 ROS_INFO_STREAM("[Odom Fusion] Waiting for vins ...");
+        //                                 inform_waiting_for_vins = false;
+        //                             }
+        //                             this_thread::sleep_for(chrono::milliseconds(500));
+        //                         }
+        //                         ROS_INFO_STREAM("[Odom Fusion] \033[43;30mCALIB_FCU_ODOM\033[0m --> \033[43;30mTAKEOFF\033[0m :)");
+        //                         state = FsmState::TAKEOFF;
+        //                         break;
+        //                     }
 
-                            if (!isFcuOdomCheckPassed())
-                            {
-                                ROS_ERROR("[Odom Fusion] \033[43;30mCALIB_FCU_ODOM\033[0m --> \033[43;30mWAIT_FOR_FCU_ODOM\033[0m Exceptions in fcu odometry (probably no optical flow), calicration terminated #^#");
-                                ROS_ERROR("[Odom Fusion] Fcu odometry restart functionality is not supported yet !!! Pretend it's been restarted #^#");
-                                state = FsmState::WAIT_FOR_FCU_ODOM;
-                                break;
-                            }
+        //                     if (!isFcuOdomCheckPassed())
+        //                     {
+        //                         ROS_ERROR("[Odom Fusion] \033[43;30mCALIB_FCU_ODOM\033[0m --> \033[43;30mWAIT_FOR_FCU_ODOM\033[0m Exceptions in fcu odometry (probably no optical flow), calicration terminated #^#");
+        //                         ROS_ERROR("[Odom Fusion] Fcu odometry restart functionality is not supported yet !!! Pretend it's been restarted #^#");
+        //                         state = FsmState::WAIT_FOR_FCU_ODOM;
+        //                         break;
+        //                     }
 
-                            calib_proc_rate.sleep();
-                        }
-                    });
-            break;
-        }
+        //                     calib_proc_rate.sleep();
+        //                 }
+        //             });
+        //     break;
+        // }
 
         case FsmState::TAKEOFF:
         {
@@ -894,7 +907,7 @@ int main(int argc, char **argv)
                                         ROS_ERROR("[Odom Fusion] Excessive drone attitude !!! Terminate ToF z correction #^#");
                                         goto end_z_tof;
                                     }
-                                } 
+                                }
 
                                 double tof_dist = tof_src.getLatestDataCopy().distance;
                                 Vector3d tof_vec_body(0.0, 0.0, -tof_dist);
@@ -911,7 +924,7 @@ int main(int argc, char **argv)
                                 {
                                     double z_tof_diff = z_tof - prev_z_tof;
                                     double z_vio_diff = z_vio_latest - prev_z_vio;
-                                    if (abs(z_tof_diff - z_vio_diff) > 0.5)
+                                    if (abs(z_tof_diff - z_vio_diff) > 0.23)
                                     {
                                         ROS_WARN_STREAM("[Odom Fusion] Exception in z from ToF (diff of speed.z = " << abs(z_tof_diff - z_vio_diff) << "m) #^#");
                                         first_z_tof_ = true;
@@ -1087,7 +1100,7 @@ int main(int argc, char **argv)
                                 {
                                     double z_est_diff = z_est - prev_z_est;
                                     double z_vio_diff = z_vio_latest - prev_z_vio;
-                                    if (abs(z_est_diff - z_vio_diff) > 0.13)
+                                    if (abs(z_est_diff - z_vio_diff) > 0.23)
                                     {
                                         ROS_WARN_STREAM("[Odom Fusion] Exception in z estimation (diff of speed.z = " << abs(z_est_diff - z_vio_diff) << "m) #^#");
                                         z_est_updated = false;
