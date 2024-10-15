@@ -72,7 +72,7 @@ continuity_check_freq: 20.0
 pos_max_jump: 0.520
 pos_jump_cooling_time: 0.250
 
-tof_max_jump: 0.1314
+tof_max_jump: 0.2
 tof_jump_cooling_time: 1.314
 
 # Check 4: imu amplitude check
