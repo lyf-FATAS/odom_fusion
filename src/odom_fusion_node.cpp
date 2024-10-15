@@ -1024,7 +1024,7 @@ int main(int argc, char **argv)
                                     inform_insufficient_pts = true;
 
                                 // 🥳🥳🥳 PCA 🥳🥳🥳
-                                Vector3d centroid;
+                                Vector3d centroid(0.0, 0.0, 0.0);
                                 for (const auto &pt : ground_pts)
                                     centroid += pt;
                                 centroid /= ground_pts.size();
