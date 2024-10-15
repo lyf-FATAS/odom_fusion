@@ -881,6 +881,7 @@ int main(int argc, char **argv)
                         ros::Rate r(est_z_rate);
                         bool first_z_tof_ = true;
                         double first_z_tof, first_z_vio, prev_z_tof, prev_z_vio;
+                        double prev_delta_z = 0;
                         while (ros::ok())
                         {
                             bool ground_smooth = tof_src.isStarted() && tof_continuity_check.isPassed();
@@ -893,7 +894,7 @@ int main(int argc, char **argv)
                                         ROS_ERROR("[Odom Fusion] Excessive drone attitude !!! Terminate ToF z correction #^#");
                                         goto end_z_tof;
                                     }
-                                }
+                                } 
 
                                 double tof_dist = tof_src.getLatestDataCopy().distance;
                                 Vector3d tof_vec_body(0.0, 0.0, -tof_dist);
@@ -910,14 +911,15 @@ int main(int argc, char **argv)
                                 {
                                     double z_tof_diff = z_tof - prev_z_tof;
                                     double z_vio_diff = z_vio_latest - prev_z_vio;
-                                    if (abs(z_tof_diff - z_vio_diff) > 0.13)
+                                    if (abs(z_tof_diff - z_vio_diff) > 0.5)
                                     {
                                         ROS_WARN_STREAM("[Odom Fusion] Exception in z from ToF (diff of speed.z = " << abs(z_tof_diff - z_vio_diff) << "m) #^#");
                                         first_z_tof_ = true;
+                                        prev_delta_z = delta_z_from_tof;
                                     }
                                     else
                                     {
-                                        delta_z_from_tof = (z_tof - first_z_tof) - (z_vio_latest - first_z_vio);
+                                        delta_z_from_tof = (z_tof - first_z_tof) - (z_vio_latest - first_z_vio) + prev_delta_z;
 
                                         prev_z_tof = z_tof;
                                         prev_z_vio = z_vio_latest;
@@ -934,6 +936,7 @@ int main(int argc, char **argv)
                             else
                             {
                                 first_z_tof_ = true;
+                                prev_delta_z = delta_z_from_tof;
                             }
                         end_z_tof:
                             r.sleep();
