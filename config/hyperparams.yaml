@@ -1,6 +1,6 @@
 %YAML:1.0
 
-Z_correction_mode: 2  # 0: z from vio  1: z from ToF  2: estimate z from lidar map
+Z_correction_mode: 1  # 0: z from vio  1: z from ToF  2: estimate z from lidar map
 est_z_rate: 2.0
 kdtree_search_radius: 1.0
 min_2nd_singular_value: 0.77
@@ -34,7 +34,7 @@ imu_freq: 200.0
 
 # Data src 4
 tof_topic: "/mavros/px4flow/raw/optical_flow_rad"
-tof_freq: 10.0
+tof_freq: 50.0
 tof_timeout: 0.2
 
 # Check 0: position magnitude check

@@ -16,7 +16,7 @@
 #include "PosContinuityCheck.hpp"
 #include "ToFContinuityCheck.hpp"
 
-#include "traj_utils/take_off.h"
+// #include "traj_utils/take_off.h"
 #include "quadrotor_msgs/TakeoffLand.h"
 #include <geometry_msgs/PoseStamped.h>
 #include <mavros_msgs/OpticalFlowRad.h>
@@ -215,41 +215,41 @@ int main(int argc, char **argv)
         fcu_odom_debiased.pose.pose.orientation.z = q_debiased.z();
     };
 
-    ros::Subscriber takeoff_signal_sub_0 =
-        nh.subscribe<traj_utils::take_off>(param["takeoff_signal_topic_0"], 10,
-                                           [&](const traj_utils::take_off::ConstPtr &signal)
-                                           {
-                                               switch (state)
-                                               {
-                                               case FsmState::WAIT_FOR_VINS:
-                                               case FsmState::CALIB_FCU_ODOM:
-                                               {
-                                                   ROS_ERROR("[Odom Fusion] Vins is not ready. No odometry output and takeoff should fail #^#");
-                                                   break;
-                                               }
-                                               case FsmState::TAKEOFF:
-                                               {
-                                                   this_thread::sleep_for(chrono::seconds(2)); // Wait for the propeller to start spinning
-                                                   fcu_odom_takeoff_pos_mag_check.startCheck();
-                                                   fcu_odom_pos_mag_check.startCheck();
-                                                   fcu_odom_vel_mag_check.startCheck();
-                                                   fcu_odom_pos_continuity_check.startCheck();
-                                                   break;
-                                               }
-                                               case FsmState::FLY_WITH_VINS:
-                                               case FsmState::FLY_WITH_MSCKF:
-                                               case FsmState::FLY_WITH_FCU_ODOM:
-                                               {
-                                                   ROS_INFO("[Odom Fusion] Landing signal received :|");
-                                                   break;
-                                               }
-                                               default:
-                                               {
-                                                   ROS_ERROR("[Odom Fusion] \033[36mThe program should never reach here ^^");
-                                                   break;
-                                               }
-                                               }
-                                           });
+    // ros::Subscriber takeoff_signal_sub_0 =
+    //     nh.subscribe<traj_utils::take_off>(param["takeoff_signal_topic_0"], 10,
+    //                                        [&](const traj_utils::take_off::ConstPtr &signal)
+    //                                        {
+    //                                            switch (state)
+    //                                            {
+    //                                            case FsmState::WAIT_FOR_VINS:
+    //                                            case FsmState::CALIB_FCU_ODOM:
+    //                                            {
+    //                                                ROS_ERROR("[Odom Fusion] Vins is not ready. No odometry output and takeoff should fail #^#");
+    //                                                break;
+    //                                            }
+    //                                            case FsmState::TAKEOFF:
+    //                                            {
+    //                                                this_thread::sleep_for(chrono::seconds(2)); // Wait for the propeller to start spinning
+    //                                                fcu_odom_takeoff_pos_mag_check.startCheck();
+    //                                                fcu_odom_pos_mag_check.startCheck();
+    //                                                fcu_odom_vel_mag_check.startCheck();
+    //                                                fcu_odom_pos_continuity_check.startCheck();
+    //                                                break;
+    //                                            }
+    //                                            case FsmState::FLY_WITH_VINS:
+    //                                            case FsmState::FLY_WITH_MSCKF:
+    //                                            case FsmState::FLY_WITH_FCU_ODOM:
+    //                                            {
+    //                                                ROS_INFO("[Odom Fusion] Landing signal received :|");
+    //                                                break;
+    //                                            }
+    //                                            default:
+    //                                            {
+    //                                                ROS_ERROR("[Odom Fusion] \033[36mThe program should never reach here ^^");
+    //                                                break;
+    //                                            }
+    //                                            }
+    //                                        });
 
     ros::Subscriber takeoff_signal_sub_1 =
         nh.subscribe<quadrotor_msgs::TakeoffLand>(param["takeoff_signal_topic_1"], 10,
