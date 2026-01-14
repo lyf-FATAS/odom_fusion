@@ -144,6 +144,7 @@ int main(int argc, char **argv)
     fcu_odom_pos_mag_check.stopCheck();
     fcu_odom_vel_mag_check.stopCheck();
     fcu_odom_pos_continuity_check.stopCheck();
+    tof_continuity_check.stopCheck();
 
     auto isVinsCheckPassed = [&]()
     {
@@ -269,6 +270,7 @@ int main(int argc, char **argv)
                                                           fcu_odom_pos_mag_check.startCheck();
                                                           fcu_odom_vel_mag_check.startCheck();
                                                           fcu_odom_pos_continuity_check.startCheck();
+                                                          tof_continuity_check.startCheck();
                                                           break;
                                                       }
                                                       case FsmState::FLY_WITH_VINS:
@@ -809,37 +811,37 @@ int main(int argc, char **argv)
                         }
                     });
 
-            if (!commu_with_px4ctrl_thread.joinable())
-                commu_with_px4ctrl_thread = thread(
-                    [&]()
-                    {
-                        while (ros::ok())
-                        {
-                            bool safe_to_enable_cmd_ctrl =
-                                (allow_high_altitude_flight ? true : (tof_src.isStarted() && tof_conservative_hgt_check.isPassed())) &&
-                                ((vins_odom_src.isStarted() && isVinsCheckPassed()) ||
-                                 (msckf_odom_src.isStarted() && isMsckfCheckPassed()));
+            // if (!commu_with_px4ctrl_thread.joinable())
+            //     commu_with_px4ctrl_thread = thread(
+            //         [&]()
+            //         {
+            //             while (ros::ok())
+            //             {
+            //                 bool safe_to_enable_cmd_ctrl =
+            //                     (allow_high_altitude_flight ? true : (tof_src.isStarted() && tof_conservative_hgt_check.isPassed())) &&
+            //                     ((vins_odom_src.isStarted() && isVinsCheckPassed()) ||
+            //                      (msckf_odom_src.isStarted() && isMsckfCheckPassed()));
 
-                            if (safe_to_enable_cmd_ctrl && !allow_px4ctrl_cmd_ctrl)
-                            {
-                                std_srvs::SetBool allow;
-                                allow.request.data = true;
-                                set_cmd_ctrl_permission_srv.call(allow);
-                                allow_px4ctrl_cmd_ctrl = true;
-                                ROS_INFO("[Odom Fusion] \033[32mVIO ready and flight altitude safe !!! Allow command control ^_^");
-                            }
-                            else if (!safe_to_enable_cmd_ctrl && allow_px4ctrl_cmd_ctrl)
-                            {
-                                std_srvs::SetBool disallow;
-                                disallow.request.data = false;
-                                set_cmd_ctrl_permission_srv.call(disallow);
-                                allow_px4ctrl_cmd_ctrl = false;
-                                ROS_ERROR("[Odom Fusion] Exceptions in VIOs or flight altitude exceeding maximum range !!! Prohibit command control #^#");
-                            }
+            //                 if (safe_to_enable_cmd_ctrl && !allow_px4ctrl_cmd_ctrl)
+            //                 {
+            //                     std_srvs::SetBool allow;
+            //                     allow.request.data = true;
+            //                     set_cmd_ctrl_permission_srv.call(allow);
+            //                     allow_px4ctrl_cmd_ctrl = true;
+            //                     ROS_INFO("[Odom Fusion] \033[32mVIO ready and flight altitude safe !!! Allow command control ^_^");
+            //                 }
+            //                 else if (!safe_to_enable_cmd_ctrl && allow_px4ctrl_cmd_ctrl)
+            //                 {
+            //                     std_srvs::SetBool disallow;
+            //                     disallow.request.data = false;
+            //                     set_cmd_ctrl_permission_srv.call(disallow);
+            //                     allow_px4ctrl_cmd_ctrl = false;
+            //                     ROS_ERROR("[Odom Fusion] Exceptions in VIOs or flight altitude exceeding maximum range !!! Prohibit command control #^#");
+            //                 }
 
-                            commu_with_px4ctrl_rate.sleep();
-                        }
-                    });
+            //                 commu_with_px4ctrl_rate.sleep();
+            //             }
+            //         });
 
             // Try to switch to another odometer when there are exceptions in the current odometer
             if (!isVinsCheckPassed())
@@ -923,9 +925,9 @@ int main(int argc, char **argv)
                                 {
                                     double z_tof_diff = z_tof - prev_z_tof;
                                     double z_vio_diff = z_vio_latest - prev_z_vio;
-                                    if (abs(z_tof_diff - z_vio_diff) > 0.23)
+                                    if (abs(z_tof_diff - z_vio_diff) > 0.5)
                                     {
-                                        ROS_WARN_STREAM("[Odom Fusion] Exception in z from ToF (diff of speed.z = " << abs(z_tof_diff - z_vio_diff) << "m) #^#");
+                                        ROS_WARN_STREAM("[Odom Fusion] Exception in delta_z from ToF (diff of delta_z from vio = " << abs(z_tof_diff - z_vio_diff) << "m) #^#");
                                         first_z_tof_ = true;
                                         prev_delta_z = delta_z_from_tof;
                                     }

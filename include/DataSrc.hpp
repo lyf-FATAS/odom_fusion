@@ -60,7 +60,7 @@ public:
         {
             if (inform_no_data_counter > 23.0 / ((src_timeout < 0.0) ? 5 / src_freq : src_timeout)) // Inform no data every 23 seconds
             {
-                ROS_ERROR_STREAM("[Odom Fusion] No data from " << src_topic << " #^#");
+                // ROS_ERROR_STREAM("[Odom Fusion] No data from " << src_topic << " #^#");
                 inform_no_data_counter = 0;
             }
             inform_no_data_counter++;
