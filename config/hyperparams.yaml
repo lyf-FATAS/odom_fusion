@@ -1,7 +1,7 @@
 %YAML:1.0
 
 Z_correction_mode: 1  # 0: z from vio  1: z from ToF  2: estimate z from lidar map
-est_z_rate: 2.0
+est_z_rate: 5.0
 kdtree_search_radius: 1.0
 min_2nd_singular_value: 0.77
 max_3rd_singular_value: 0.52
@@ -13,7 +13,7 @@ ros_logger_level: 1  # 0: Debug  1: Info  2: Warn  3: Error
 publish_debug_topic: 1
 
 # Data src 0
-vins_odom_topic: "/vins_estimator/imu_propagate"
+vins_odom_topic: "/fusion_odometry/current_point_odom"
 vins_odom_freq: 200.0
 vins_odom_timeout: 0.1
 
@@ -30,19 +30,18 @@ fcu_odom_timeout: 0.1
 # Data src 3
 imu_topic: "/mavros/imu/data"
 imu_freq: 200.0
-# imu_timeout: 0.1
 
 # Data src 4
 tof_topic: "/mavros/px4flow/raw/optical_flow_rad"
-tof_freq: 50.0
+tof_freq: 10.0
 tof_timeout: 0.2
 
 # Check 0: position magnitude check
 pos_mag_check_freq: 3.0
-min_x_takeoff: -250.0
-max_x_takeoff:  250.0
-min_y_takeoff: -250.0
-max_y_takeoff:  250.0
+min_x_takeoff: -100.0
+max_x_takeoff:  100.0
+min_y_takeoff: -100.0
+max_y_takeoff:  100.0
 min_z_takeoff: -13.0
 max_z_takeoff:  13.0
 
@@ -52,32 +51,32 @@ min_y: -100.0
 max_y:  100.0
 min_z: -13.0
 max_z:  13.0
-# max_z_fcu_odom:  2.333
+
 max_z_fcu_odom:  13.0
 
 # Check 1: tof height check
-tof_conservative_hgt_check_freq: 10.0
-max_conservative_hgt: 2.1 # real maximum = 2.4 ~ 2.5m
+tof_conservative_hgt_check_freq: 3.0
+max_conservative_hgt: 100.0
 
-tof_hgt_check_freq: 10.0
-max_hgt: 2.4
+tof_hgt_check_freq: 3.0
+max_hgt: 100.0  # maximum = 4m for ExcellentElephant
 
 # Check 2: velocity magnitude check
 vel_mag_check_freq: 3.0
-max_vel: 5.2
+max_vel: 100.0
 
 # Check 3: continuity check
 continuity_check_freq: 20.0
 
-pos_max_jump: 0.520
-pos_jump_cooling_time: 0.250
+pos_max_jump: 100.0
+pos_jump_cooling_time: 100.0
 
-tof_max_jump: 0.23
-tof_jump_cooling_time: 1.314
+tof_max_jump: 0.2
+tof_jump_cooling_time: 0.5
 
 # Check 4: imu amplitude check
 imu_amp_check_freq: 3.0
-max_amp: 8.0 # -4.0 ~ +4.0
+max_amp: 100.0  # -50.0 ~ +50.0
 
 takeoff_signal_topic_0: "/take_off_bace"
 takeoff_signal_topic_1: "/px4ctrl/takeoff_land"

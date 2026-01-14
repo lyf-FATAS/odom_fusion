@@ -89,7 +89,6 @@ int main(int argc, char **argv)
     else
         init_x = init_y = init_z = 0.0;
 
-    DataSrc<sensor_msgs::Imu> imu_src(nh, param["imu_topic"], param["imu_freq"]);
     DataSrc<mavros_msgs::OpticalFlowRad> tof_src(nh, param["tof_topic"], param["tof_freq"], param["tof_timeout"]);
 
     ros::AsyncSpinner spinner(10);
@@ -902,7 +901,7 @@ int main(int argc, char **argv)
                             {
                                 {
                                     lock_guard<mutex> lock(latest_q_mtx);
-                                    if (acos((latest_q * Vector3d::UnitZ()).dot(Vector3d::UnitZ())) > (M_PI / 7))
+                                    if (acos((latest_q * Vector3d::UnitZ()).dot(Vector3d::UnitZ())) > (M_PI / 4))
                                     {
                                         ROS_ERROR("[Odom Fusion] Excessive drone attitude !!! Terminate ToF z correction #^#");
                                         goto end_z_tof;
