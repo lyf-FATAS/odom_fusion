@@ -270,7 +270,6 @@ int main(int argc, char **argv)
                                                           fcu_odom_pos_mag_check.startCheck();
                                                           fcu_odom_vel_mag_check.startCheck();
                                                           fcu_odom_pos_continuity_check.startCheck();
-                                                          tof_continuity_check.startCheck();
                                                           break;
                                                       }
                                                       case FsmState::FLY_WITH_VINS:
@@ -319,6 +318,7 @@ int main(int argc, char **argv)
                                                      }
                                                      case FsmState::TAKEOFF:
                                                      {
+                                                         tof_continuity_check.startCheck();
                                                          state = FsmState::FLY_WITH_VINS;
                                                          ROS_INFO("[Odom Fusion] \033[32mTakeoff done ^v^ \033[43;30mTAKEOFF\033[0m --> \033[43;30mFLY_WITH_VINS\033[0m :)");
                                                          break;
@@ -475,6 +475,9 @@ int main(int argc, char **argv)
     // Z_correction_mode == 1: use z from ToF
     thread est_z_from_tof_thread;
     atomic<double> delta_z_from_tof(0.0);
+    int delta_z_init_frame_num = 10;
+    if (!param["delta_z_init_frame_num"].empty())
+        delta_z_init_frame_num = max((int)param["delta_z_init_frame_num"], 1);
 
     mutex latest_q_mtx;
     Quaterniond latest_q;
@@ -896,6 +899,9 @@ int main(int argc, char **argv)
                         bool first_z_tof_ = true;
                         double first_z_tof, first_z_vio, prev_z_tof, prev_z_vio;
                         double prev_delta_z = 0;
+                        bool delta_z_initialized = false;
+                        int delta_z_init_cnt = 0;
+                        double delta_z_init_sum = 0.0;
                         while (ros::ok())
                         {
                             bool ground_smooth = tof_src.isStarted() && tof_continuity_check.isPassed();
@@ -914,29 +920,49 @@ int main(int argc, char **argv)
                                 Vector3d tof_vec_body(0.0, 0.0, -tof_dist);
                                 Vector3d tof_vec_world = latest_q * tof_vec_body;
                                 double z_tof = abs(tof_vec_world.z());
+                                double z_vio = z_vio_latest;
+
+                                if (!delta_z_initialized)
+                                {
+                                    delta_z_init_sum += (z_tof - z_vio);
+                                    delta_z_init_cnt++;
+
+                                    if (delta_z_init_cnt >= delta_z_init_frame_num)
+                                    {
+                                        delta_z_from_tof = delta_z_init_sum / delta_z_init_cnt;
+                                        prev_delta_z = delta_z_from_tof.load();
+                                        first_z_tof = prev_z_tof = z_tof;
+                                        first_z_vio = prev_z_vio = z_vio;
+                                        first_z_tof_ = false;
+                                        delta_z_initialized = true;
+                                        ROS_INFO_STREAM("[Odom Fusion] delta_z_from_tof initialized with "
+                                                        << delta_z_init_cnt << " frames, value = " << delta_z_from_tof.load() << "m");
+                                    }
+                                    goto end_z_tof;
+                                }
 
                                 if (first_z_tof_)
                                 {
                                     first_z_tof = prev_z_tof = z_tof;
-                                    first_z_vio = prev_z_vio = z_vio_latest;
+                                    first_z_vio = prev_z_vio = z_vio;
                                     first_z_tof_ = false;
                                 }
                                 else
                                 {
                                     double z_tof_diff = z_tof - prev_z_tof;
-                                    double z_vio_diff = z_vio_latest - prev_z_vio;
+                                    double z_vio_diff = z_vio - prev_z_vio;
                                     if (abs(z_tof_diff - z_vio_diff) > 0.5)
                                     {
                                         ROS_WARN_STREAM("[Odom Fusion] Exception in delta_z from ToF (diff of delta_z from vio = " << abs(z_tof_diff - z_vio_diff) << "m) #^#");
                                         first_z_tof_ = true;
-                                        prev_delta_z = delta_z_from_tof;
+                                        prev_delta_z = delta_z_from_tof.load();
                                     }
                                     else
                                     {
-                                        delta_z_from_tof = (z_tof - first_z_tof) - (z_vio_latest - first_z_vio) + prev_delta_z;
+                                        delta_z_from_tof = (z_tof - first_z_tof) - (z_vio - first_z_vio) + prev_delta_z;
 
                                         prev_z_tof = z_tof;
-                                        prev_z_vio = z_vio_latest;
+                                        prev_z_vio = z_vio;
 
                                         if (publish_debug_topic)
                                         {
@@ -949,8 +975,13 @@ int main(int argc, char **argv)
                             }
                             else
                             {
+                                if (!delta_z_initialized)
+                                {
+                                    delta_z_init_cnt = 0;
+                                    delta_z_init_sum = 0.0;
+                                }
                                 first_z_tof_ = true;
-                                prev_delta_z = delta_z_from_tof;
+                                prev_delta_z = delta_z_from_tof.load();
                             }
                         end_z_tof:
                             r.sleep();
