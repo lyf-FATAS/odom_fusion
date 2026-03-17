@@ -78,8 +78,7 @@ tof_jump_cooling_time: 0.5
 imu_amp_check_freq: 3.0
 max_amp: 100.0  # -50.0 ~ +50.0
 
-takeoff_signal_topic_0: "/take_off_bace"
-takeoff_signal_topic_1: "/px4ctrl/takeoff_land"
+takeoff_signal_topic: "/px4ctrl/takeoff_land"
 hover_signal_topic: "/traj_start_trigger"
 
 vins_restart_service: "/vins_restart"

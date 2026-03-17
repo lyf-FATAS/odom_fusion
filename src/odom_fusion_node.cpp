@@ -1,27 +1,26 @@
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <iomanip>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <mutex>
+#include <vector>
 #include <ros/ros.h>
 #include <nav_msgs/Odometry.h>
-#include <sensor_msgs/Imu.h>
 #include <opencv2/core/core.hpp>
 #include <eigen3/Eigen/Eigen>
 
 #include "DataSrc.hpp"
 #include "PosMagCheck.hpp"
 #include "VelMagCheck.hpp"
-#include "ToFHgtCheck.hpp"
 #include "PosContinuityCheck.hpp"
 #include "ToFContinuityCheck.hpp"
 
-// #include "traj_utils/take_off.h"
 #include "quadrotor_msgs/TakeoffLand.h"
 #include <geometry_msgs/PoseStamped.h>
 #include <mavros_msgs/OpticalFlowRad.h>
-#include <std_srvs/Trigger.h>
-#include <std_srvs/SetBool.h>
 #include <sensor_msgs/PointCloud2.h>
 #include <geometry_msgs/PointStamped.h>
 #include <geometry_msgs/Vector3.h>
@@ -40,11 +39,8 @@ using namespace pcl;
 enum FsmState
 {
     WAIT_FOR_VINS,
-    CALIB_FCU_ODOM,
     TAKEOFF,
-    FLY_WITH_VINS,
-    FLY_WITH_MSCKF,
-    FLY_WITH_FCU_ODOM
+    FLY_WITH_VINS
 };
 
 int main(int argc, char **argv)
@@ -76,8 +72,6 @@ int main(int argc, char **argv)
 
     //************* Data sources *************//
     DataSrc<nav_msgs::Odometry> vins_odom_src(nh, param["vins_odom_topic"], param["vins_odom_freq"], param["vins_odom_timeout"]);
-    DataSrc<nav_msgs::Odometry> msckf_odom_src(nh, param["msckf_odom_topic"], param["msckf_odom_freq"], param["msckf_odom_timeout"]);
-    DataSrc<nav_msgs::Odometry> fcu_odom_src(nh, param["fcu_odom_topic"], param["fcu_odom_freq"], param["fcu_odom_timeout"]);
 
     double init_x, init_y, init_z;
     if (getenv("ipx") != nullptr && getenv("ipy") != nullptr && getenv("ipz") != nullptr)
@@ -100,50 +94,14 @@ int main(int argc, char **argv)
                                            param["min_y_takeoff"], param["max_y_takeoff"],
                                            param["min_z_takeoff"], param["max_z_takeoff"],
                                            init_x, init_y, init_z);
-    PosMagCheck msckf_takeoff_pos_mag_check(msckf_odom_src, param["pos_mag_check_freq"],
-                                            param["min_x_takeoff"], param["max_x_takeoff"],
-                                            param["min_y_takeoff"], param["max_y_takeoff"],
-                                            param["min_z_takeoff"], param["max_z_takeoff"],
-                                            init_x, init_y, init_z);
-    PosMagCheck fcu_odom_takeoff_pos_mag_check(fcu_odom_src, param["pos_mag_check_freq"],
-                                               param["min_x_takeoff"], param["max_x_takeoff"],
-                                               param["min_y_takeoff"], param["max_y_takeoff"],
-                                               param["min_z_takeoff"], param["max_z_takeoff"],
-                                               0.0, 0.0, 0.0);
-
     PosMagCheck vins_pos_mag_check(vins_odom_src, param["pos_mag_check_freq"],
                                    param["min_x"], param["max_x"],
                                    param["min_y"], param["max_y"],
                                    param["min_z"], param["max_z"],
                                    init_x, init_y, init_z);
-    PosMagCheck msckf_pos_mag_check(msckf_odom_src, param["pos_mag_check_freq"],
-                                    param["min_x"], param["max_x"],
-                                    param["min_y"], param["max_y"],
-                                    param["min_z"], param["max_z"],
-                                    init_x, init_y, init_z);
-    PosMagCheck fcu_odom_pos_mag_check(fcu_odom_src, param["pos_mag_check_freq"],
-                                       param["min_x"], param["max_x"],
-                                       param["min_y"], param["max_y"],
-                                       param["min_z"], param["max_z_fcu_odom"],
-                                       0.0, 0.0, 0.0);
-
-    ToFHgtCheck tof_conservative_hgt_check(tof_src, param["tof_conservative_hgt_check_freq"], param["max_conservative_hgt"]);
-    ToFHgtCheck tof_hgt_check(tof_src, param["tof_hgt_check_freq"], param["max_hgt"]);
-
     VelMagCheck vins_vel_mag_check(vins_odom_src, param["vel_mag_check_freq"], param["max_vel"]);
-    VelMagCheck msckf_vel_mag_check(msckf_odom_src, param["vel_mag_check_freq"], param["max_vel"]);
-    VelMagCheck fcu_odom_vel_mag_check(fcu_odom_src, param["vel_mag_check_freq"], param["max_vel"]);
-
     PosContinuityCheck vins_pos_continuity_check(vins_odom_src, param["continuity_check_freq"], param["pos_max_jump"], param["pos_jump_cooling_time"]);
-    PosContinuityCheck msckf_pos_continuity_check(msckf_odom_src, param["continuity_check_freq"], param["pos_max_jump"], param["pos_jump_cooling_time"]);
-    PosContinuityCheck fcu_odom_pos_continuity_check(fcu_odom_src, param["continuity_check_freq"], param["pos_max_jump"], param["pos_jump_cooling_time"]);
     ToFContinuityCheck tof_continuity_check(tof_src, param["continuity_check_freq"], param["tof_max_jump"], param["tof_jump_cooling_time"]);
-
-    // Fcu odometer is unreliable until the propeller is spinned
-    fcu_odom_takeoff_pos_mag_check.stopCheck();
-    fcu_odom_pos_mag_check.stopCheck();
-    fcu_odom_vel_mag_check.stopCheck();
-    fcu_odom_pos_continuity_check.stopCheck();
     tof_continuity_check.stopCheck();
 
     auto isVinsCheckPassed = [&]()
@@ -153,131 +111,30 @@ int main(int argc, char **argv)
                vins_vel_mag_check.isPassed() &&
                vins_pos_continuity_check.isPassed();
     };
-    auto isMsckfCheckPassed = [&]()
-    {
-        return msckf_takeoff_pos_mag_check.isPassed() &&
-               msckf_pos_mag_check.isPassed() &&
-               msckf_vel_mag_check.isPassed();
-    };
-    auto isFcuOdomCheckPassed = [&]()
-    {
-        return fcu_odom_takeoff_pos_mag_check.isPassed() &&
-               fcu_odom_pos_mag_check.isPassed() &&
-               fcu_odom_vel_mag_check.isPassed() &&
-               fcu_odom_pos_continuity_check.isPassed() &&
-               tof_hgt_check.isPassed() &&
-               tof_continuity_check.isPassed();
-    };
 
     //************* Main loop *************//
     FsmState state(FsmState::WAIT_FOR_VINS);
-    const double data_check_freq = max({10.0,
-                                        (double)param["pos_mag_check_freq"],
-                                        (double)param["tof_conservative_hgt_check_freq"],
-                                        (double)param["tof_hgt_check_freq"],
-                                        (double)param["vel_mag_check_freq"],
-                                        (double)param["continuity_check_freq"],
-                                        (double)param["imu_amp_check_freq"]});
-    ros::Rate data_check_rate(data_check_freq);
+    ros::Rate data_check_rate(10.0);
 
-    // Calibrate initial position and yaw bias of the fcu odometry for takeoff
-    // Note that these static biases may only be used during takeoff and can become dynamic during flight
-    thread calib_fcu_odom_thread;
-    Vector3d p_fcu_bias;
-    Quaterniond q_fcu_bias;
-    auto debiasFcuOdom = [&p_fcu_bias, &q_fcu_bias, init_x, init_y, init_z](const nav_msgs::Odometry &fcu_odom, nav_msgs::Odometry &fcu_odom_debiased)
-    {
-        Vector3d p(fcu_odom.pose.pose.position.x,
-                   fcu_odom.pose.pose.position.y,
-                   fcu_odom.pose.pose.position.z);
-        Quaterniond q(fcu_odom.pose.pose.orientation.w,
-                      fcu_odom.pose.pose.orientation.x,
-                      fcu_odom.pose.pose.orientation.y,
-                      fcu_odom.pose.pose.orientation.z);
-        Vector3d v(fcu_odom.twist.twist.linear.x,
-                   fcu_odom.twist.twist.linear.y,
-                   fcu_odom.twist.twist.linear.z);
-
-        Vector3d p_debiased = q_fcu_bias.inverse() * (p - p_fcu_bias);
-        Quaterniond q_debiased = q_fcu_bias.inverse() * q;
-        Vector3d v_world = q_debiased * v;
-
-        fcu_odom_debiased = fcu_odom; // FIXME: necessary copy ?
-        fcu_odom_debiased.pose.pose.position.x = p_debiased.x() + init_x;
-        fcu_odom_debiased.pose.pose.position.y = p_debiased.y() + init_y;
-        fcu_odom_debiased.pose.pose.position.z = p_debiased.z() + init_z;
-        fcu_odom_debiased.twist.twist.linear.x = v_world.x();
-        fcu_odom_debiased.twist.twist.linear.y = v_world.y();
-        fcu_odom_debiased.twist.twist.linear.z = v_world.z();
-        fcu_odom_debiased.pose.pose.orientation.w = q_debiased.w();
-        fcu_odom_debiased.pose.pose.orientation.x = q_debiased.x();
-        fcu_odom_debiased.pose.pose.orientation.y = q_debiased.y();
-        fcu_odom_debiased.pose.pose.orientation.z = q_debiased.z();
-    };
-
-    // ros::Subscriber takeoff_signal_sub_0 =
-    //     nh.subscribe<traj_utils::take_off>(param["takeoff_signal_topic_0"], 10,
-    //                                        [&](const traj_utils::take_off::ConstPtr &signal)
-    //                                        {
-    //                                            switch (state)
-    //                                            {
-    //                                            case FsmState::WAIT_FOR_VINS:
-    //                                            case FsmState::CALIB_FCU_ODOM:
-    //                                            {
-    //                                                ROS_ERROR("[Odom Fusion] Vins is not ready. No odometry output and takeoff should fail #^#");
-    //                                                break;
-    //                                            }
-    //                                            case FsmState::TAKEOFF:
-    //                                            {
-    //                                                this_thread::sleep_for(chrono::seconds(2)); // Wait for the propeller to start spinning
-    //                                                fcu_odom_takeoff_pos_mag_check.startCheck();
-    //                                                fcu_odom_pos_mag_check.startCheck();
-    //                                                fcu_odom_vel_mag_check.startCheck();
-    //                                                fcu_odom_pos_continuity_check.startCheck();
-    //                                                break;
-    //                                            }
-    //                                            case FsmState::FLY_WITH_VINS:
-    //                                            case FsmState::FLY_WITH_MSCKF:
-    //                                            case FsmState::FLY_WITH_FCU_ODOM:
-    //                                            {
-    //                                                ROS_INFO("[Odom Fusion] Landing signal received :|");
-    //                                                break;
-    //                                            }
-    //                                            default:
-    //                                            {
-    //                                                ROS_ERROR("[Odom Fusion] \033[36mThe program should never reach here ^^");
-    //                                                break;
-    //                                            }
-    //                                            }
-    //                                        });
-
-    ros::Subscriber takeoff_signal_sub_1 =
-        nh.subscribe<quadrotor_msgs::TakeoffLand>(param["takeoff_signal_topic_1"], 10,
+    ros::Subscriber takeoff_signal_sub =
+        nh.subscribe<quadrotor_msgs::TakeoffLand>(param["takeoff_signal_topic"], 10,
                                                   [&](const quadrotor_msgs::TakeoffLand::ConstPtr &signal)
                                                   {
                                                       switch (state)
                                                       {
                                                       case FsmState::WAIT_FOR_VINS:
-                                                      case FsmState::CALIB_FCU_ODOM:
                                                       {
                                                           ROS_ERROR("[Odom Fusion] Vins is not ready. No odometry output and takeoff should fail #^#");
                                                           break;
                                                       }
                                                       case FsmState::TAKEOFF:
                                                       {
-                                                          this_thread::sleep_for(chrono::seconds(2)); // Wait for the propeller to start spinning
-                                                          fcu_odom_takeoff_pos_mag_check.startCheck();
-                                                          fcu_odom_pos_mag_check.startCheck();
-                                                          fcu_odom_vel_mag_check.startCheck();
-                                                          fcu_odom_pos_continuity_check.startCheck();
                                                           break;
                                                       }
                                                       case FsmState::FLY_WITH_VINS:
-                                                      case FsmState::FLY_WITH_MSCKF:
-                                                      case FsmState::FLY_WITH_FCU_ODOM:
                                                       {
                                                           if (signal->takeoff_land_cmd == 1)
-                                                              ROS_WARN("[Odom Fusion] Takeoff signal received but odometry has been switched. Check fcu odometry please :|");
+                                                              ROS_WARN("[Odom Fusion] Takeoff signal received while already flying with vins :|");
                                                           break;
                                                       }
                                                       default:
@@ -288,46 +145,28 @@ int main(int argc, char **argv)
                                                       }
                                                   });
 
-    // Odometry restart services
-    ros::ServiceClient vins_restart_srv = nh.serviceClient<std_srvs::Trigger>((string)param["vins_restart_service"]);
-    ros::ServiceClient msckf_restart_srv = nh.serviceClient<std_srvs::Trigger>((string)param["msckf_restart_service"]);
-    auto restartOdom = [](ros::ServiceClient &odom_restart_srv, DataSrc<nav_msgs::Odometry> &odom_src)
-    {
-        std_srvs::Trigger restart;
-        odom_restart_srv.call(restart);
-        ROS_INFO("[Odom Fusion] Odom restart service called :|");
-
-        odom_src.restart();
-    };
-
     ros::Subscriber hover_signal_sub =
         nh.subscribe<geometry_msgs::PoseStamped>(param["hover_signal_topic"], 10,
-                                                 [&](const geometry_msgs::PoseStamped::ConstPtr &signal)
+                                                 [&](const geometry_msgs::PoseStamped::ConstPtr &)
                                                  {
-                                                     vins_takeoff_pos_mag_check.stopCheck();
-                                                     msckf_takeoff_pos_mag_check.stopCheck();
-                                                     fcu_odom_takeoff_pos_mag_check.stopCheck();
-
                                                      switch (state)
                                                      {
                                                      case FsmState::WAIT_FOR_VINS:
-                                                     case FsmState::CALIB_FCU_ODOM:
                                                      {
                                                          ROS_ERROR("[Odom Fusion] \033[36mThe program should never reach here ^^");
                                                          break;
                                                      }
                                                      case FsmState::TAKEOFF:
                                                      {
+                                                         vins_takeoff_pos_mag_check.stopCheck();
                                                          tof_continuity_check.startCheck();
                                                          state = FsmState::FLY_WITH_VINS;
                                                          ROS_INFO("[Odom Fusion] \033[32mTakeoff done ^v^ \033[43;30mTAKEOFF\033[0m --> \033[43;30mFLY_WITH_VINS\033[0m :)");
                                                          break;
                                                      }
                                                      case FsmState::FLY_WITH_VINS:
-                                                     case FsmState::FLY_WITH_MSCKF:
-                                                     case FsmState::FLY_WITH_FCU_ODOM:
                                                      {
-                                                         ROS_WARN("[Odom Fusion] Hover signal received but odometry has been switched during takeoff :|");
+                                                         ROS_WARN("[Odom Fusion] Hover signal received while already flying with vins :|");
                                                          break;
                                                      }
                                                      default:
@@ -338,131 +177,7 @@ int main(int argc, char **argv)
                                                      }
                                                  });
 
-    // Ensure currently unused odometry sources are available as backups
-    ros::Rate logistic_rate(data_check_freq);
-    thread logistic_thread = thread(
-        [&]()
-        {
-            while (ros::ok())
-            {
-                if (state != FsmState::FLY_WITH_VINS && state != FsmState::TAKEOFF &&
-                    vins_odom_src.isStarted() && // If the data source never starts at program startup, or midway through after sending the restart signal, the program will be helpless 😥😥😥
-                    !isVinsCheckPassed() && vins_odom_src.isAvailable())
-                {
-                    ROS_ERROR("[Odom Fusion] Exceptions in vins odometry #^# Restarting ...");
-                    vins_odom_src.setUnavailable();
-                    restartOdom(vins_restart_srv, vins_odom_src);
-                }
-                else if (vins_odom_src.isStarted() && isVinsCheckPassed() && !vins_odom_src.isAvailable())
-                {
-                    ROS_INFO_STREAM("[Odom Fusion] \033[32mVins odometry becomes available :)");
-                    vins_odom_src.setAvailable();
-                }
-
-                if (state != FsmState::FLY_WITH_MSCKF &&
-                    msckf_odom_src.isStarted() &&
-                    !isMsckfCheckPassed() && msckf_odom_src.isAvailable())
-                {
-                    ROS_ERROR("[Odom Fusion] Exceptions in msckf odometry #^# Restarting ...");
-                    msckf_odom_src.setUnavailable();
-                    restartOdom(msckf_restart_srv, msckf_odom_src);
-                }
-                else if (msckf_odom_src.isStarted() && isMsckfCheckPassed() && !msckf_odom_src.isAvailable())
-                {
-                    ROS_INFO_STREAM("[Odom Fusion] \033[32mMsckf odometry becomes available :)");
-                    msckf_odom_src.setAvailable();
-                }
-
-                if (state != FsmState::CALIB_FCU_ODOM && state != FsmState::FLY_WITH_FCU_ODOM &&
-                    fcu_odom_src.isStarted() &&
-                    !isFcuOdomCheckPassed() && fcu_odom_src.isAvailable())
-                {
-                    fcu_odom_src.setUnavailable();
-                    ROS_ERROR("[Odom Fusion] Exceptions in fcu odometry #^# Fcu odometry restart functionality is not supported yet !!! Pretend it's been restarted #_#");
-                }
-                else if (fcu_odom_src.isStarted() && isFcuOdomCheckPassed() && !fcu_odom_src.isAvailable())
-                {
-                    ROS_INFO_STREAM("[Odom Fusion] \033[32mFcu odometry becomes available :)");
-                    fcu_odom_src.setAvailable();
-                }
-
-                logistic_rate.sleep();
-            }
-        });
-
     thread odom_output_thread;
-    Vector3d p_smoother_p(0.0, 0.0, 0.0);
-    Quaterniond p_smoother_q(1.0, 0.0, 0.0, 0.0);
-    Quaterniond q_smoother(1.0, 0.0, 0.0, 0.0);
-    double smoother_decay_const_p = param["smoother_decay_const_p"];
-    double smoother_decay_const_yaw = param["smoother_decay_const_yaw"];
-    int smoother_decay_timestep = 0;
-    auto applySmoother = [&](nav_msgs::Odometry &odom_output)
-    {
-        Vector3d p(odom_output.pose.pose.position.x,
-                   odom_output.pose.pose.position.y,
-                   odom_output.pose.pose.position.z);
-        Quaterniond q(odom_output.pose.pose.orientation.w,
-                      odom_output.pose.pose.orientation.x,
-                      odom_output.pose.pose.orientation.y,
-                      odom_output.pose.pose.orientation.z);
-
-        Vector3d p_smoothed = p_smoother_q.slerp(1 - exp(-smoother_decay_const_p * smoother_decay_timestep), Quaterniond::Identity()) * p +
-                              exp(-smoother_decay_const_p * smoother_decay_timestep) * p_smoother_p;
-        Quaterniond q_smoothed = q_smoother.slerp(1 - exp(-smoother_decay_const_yaw * smoother_decay_timestep), Quaterniond::Identity()) * q;
-        smoother_decay_timestep++;
-
-        odom_output.pose.pose.position.x = p_smoothed.x();
-        odom_output.pose.pose.position.y = p_smoothed.y();
-        odom_output.pose.pose.position.z = p_smoothed.z();
-        odom_output.pose.pose.orientation.w = q_smoothed.w();
-        odom_output.pose.pose.orientation.x = q_smoothed.x();
-        odom_output.pose.pose.orientation.y = q_smoothed.y();
-        odom_output.pose.pose.orientation.z = q_smoothed.z();
-    };
-    auto generateSmoother = [&](nav_msgs::Odometry &odom_prv, nav_msgs::Odometry &odom_fut)
-    {
-        applySmoother(odom_prv);
-
-        const Vector3d p_prv(odom_prv.pose.pose.position.x,
-                             odom_prv.pose.pose.position.y,
-                             odom_prv.pose.pose.position.z);
-        const Vector3d p_fut(odom_fut.pose.pose.position.x,
-                             odom_fut.pose.pose.position.y,
-                             odom_fut.pose.pose.position.z);
-        const Quaterniond q_prv(odom_prv.pose.pose.orientation.w,
-                                odom_prv.pose.pose.orientation.x,
-                                odom_prv.pose.pose.orientation.y,
-                                odom_prv.pose.pose.orientation.z);
-        const Quaterniond q_fut(odom_fut.pose.pose.orientation.w,
-                                odom_fut.pose.pose.orientation.x,
-                                odom_fut.pose.pose.orientation.y,
-                                odom_fut.pose.pose.orientation.z);
-
-        Matrix3d R_diff = (q_prv * q_fut.inverse()).toRotationMatrix();
-        double yaw_diff = atan2(R_diff(1, 0), R_diff(0, 0));
-        p_smoother_q = AngleAxisd(yaw_diff, Vector3d::UnitZ());
-
-        p_smoother_p = p_prv - p_smoother_q * p_fut;
-        q_smoother = p_smoother_q;
-        smoother_decay_timestep = 0;
-    };
-    auto toWorldVel = [&](nav_msgs::Odometry &odom)
-    {
-        Quaterniond q_b2w(odom.pose.pose.orientation.w,
-                          odom.pose.pose.orientation.x,
-                          odom.pose.pose.orientation.y,
-                          odom.pose.pose.orientation.z);
-
-        Vector3d v_body(odom.twist.twist.linear.x,
-                        odom.twist.twist.linear.y,
-                        odom.twist.twist.linear.z);
-        Vector3d v_world = q_b2w * v_body;
-
-        odom.twist.twist.linear.x = v_world.x();
-        odom.twist.twist.linear.y = v_world.y();
-        odom.twist.twist.linear.z = v_world.z();
-    };
 
     //************* Z Correction With ToF or Lidar Map *************//
     int Z_correction_mode = param["Z_correction_mode"];
@@ -593,34 +308,128 @@ int main(int argc, char **argv)
         odom_output.child_frame_id = "drone_" + to_string(self_id);
         odom_output.header.frame_id = "world";
     };
-    ros::Rate odom_output_rate(vins_odom_src.src_freq); // Vins is used first during takeoff
+    ros::Rate odom_output_rate(vins_odom_src.src_freq);
     ros::Publisher odom_output_pub = nh.advertise<nav_msgs::Odometry>(param["odom_output_topic"], 100);
+    bool vins_check_alarm_active = false;
+    auto formatDouble = [](double value)
+    {
+        ostringstream oss;
+        oss << fixed << setprecision(3) << value;
+        return oss.str();
+    };
+    auto getVinsCheckFailureDetail = [&]() -> string
+    {
+        vector<string> issues;
+        const double stream_timeout = vins_odom_src.src_timeout < 0.0 ? 5.0 / vins_odom_src.src_freq : vins_odom_src.src_timeout;
+        if (!vins_odom_src.isStable())
+            issues.emplace_back("data_stream_unstable: no odom received for more than " + formatDouble(stream_timeout) + "s");
 
-    thread commu_with_px4ctrl_thread;
-    ros::Rate commu_with_px4ctrl_rate(data_check_freq);
-    bool allow_high_altitude_flight;
-    param["allow_high_altitude_flight"] >> allow_high_altitude_flight;
-    bool allow_px4ctrl_cmd_ctrl = true;
-    ros::ServiceClient set_cmd_ctrl_permission_srv = nh.serviceClient<std_srvs::SetBool>(param["set_px4ctrl_cmd_ctrl_permission_service"]);
+        if (!vins_odom_src.isStarted() || vins_odom_src.getBufSize() == 0)
+            issues.emplace_back("no odom sample buffered");
+        else
+        {
+            nav_msgs::Odometry latest_odom = vins_odom_src.getLatestDataCopy();
+            const double x = latest_odom.pose.pose.position.x - init_x;
+            const double y = latest_odom.pose.pose.position.y - init_y;
+            const double z = latest_odom.pose.pose.position.z - init_z;
+            const double speed = Vector3d(latest_odom.twist.twist.linear.x,
+                                          latest_odom.twist.twist.linear.y,
+                                          latest_odom.twist.twist.linear.z)
+                                     .norm();
 
-    bool inform_bad_odom = true;
+            auto appendPosMagIssue = [&](PosMagCheck &check, const string &label)
+            {
+                if (!check.enable_check.load() || check.isPassed())
+                    return;
+
+                if (x < check.min_x)
+                    issues.emplace_back(label + ".x=" + formatDouble(x) + " < min=" + formatDouble(check.min_x));
+                else if (x > check.max_x)
+                    issues.emplace_back(label + ".x=" + formatDouble(x) + " > max=" + formatDouble(check.max_x));
+                else if (y < check.min_y)
+                    issues.emplace_back(label + ".y=" + formatDouble(y) + " < min=" + formatDouble(check.min_y));
+                else if (y > check.max_y)
+                    issues.emplace_back(label + ".y=" + formatDouble(y) + " > max=" + formatDouble(check.max_y));
+                else if (z < check.min_z)
+                    issues.emplace_back(label + ".z=" + formatDouble(z) + " < min=" + formatDouble(check.min_z));
+                else if (z > check.max_z)
+                    issues.emplace_back(label + ".z=" + formatDouble(z) + " > max=" + formatDouble(check.max_z));
+                else if (vins_odom_src.isStable())
+                    issues.emplace_back(label + " failed but current sample is within bounds");
+            };
+
+            appendPosMagIssue(vins_takeoff_pos_mag_check, "takeoff_position_check");
+            appendPosMagIssue(vins_pos_mag_check, "position_check");
+
+            if (vins_vel_mag_check.enable_check.load() && !vins_vel_mag_check.isPassed())
+            {
+                if (speed > vins_vel_mag_check.max_vel)
+                    issues.emplace_back("velocity_check: speed=" + formatDouble(speed) + " > max=" + formatDouble(vins_vel_mag_check.max_vel));
+                else if (vins_odom_src.isStable())
+                    issues.emplace_back("velocity_check failed but current speed=" + formatDouble(speed));
+            }
+
+            if (vins_pos_continuity_check.enable_check.load() && !vins_pos_continuity_check.isPassed())
+            {
+                if (vins_odom_src.getBufSize() >= 2)
+                {
+                    nav_msgs::Odometry previous_odom = vins_odom_src.getPenultimateCopy(1);
+                    const Vector3d latest_pos(latest_odom.pose.pose.position.x,
+                                              latest_odom.pose.pose.position.y,
+                                              latest_odom.pose.pose.position.z);
+                    const Vector3d previous_pos(previous_odom.pose.pose.position.x,
+                                                previous_odom.pose.pose.position.y,
+                                                previous_odom.pose.pose.position.z);
+                    const double jump = (latest_pos - previous_pos).norm();
+                    if (jump > vins_pos_continuity_check.max_jump)
+                        issues.emplace_back("position_continuity_check: jump=" + formatDouble(jump) + " > max=" + formatDouble(vins_pos_continuity_check.max_jump));
+                    else if (vins_pos_continuity_check.unstable)
+                    {
+                        const double remaining_cooling = max(0.0, vins_pos_continuity_check.cooling_time - (ros::Time::now() - vins_pos_continuity_check.unstable_start_time).toSec());
+                        issues.emplace_back("position_continuity_check: in cooling window, remaining=" + formatDouble(remaining_cooling) + "s after previous jump");
+                    }
+                    else
+                        issues.emplace_back("position_continuity_check failed");
+                }
+                else
+                    issues.emplace_back("position_continuity_check failed with insufficient buffered samples");
+            }
+        }
+
+        if (issues.empty())
+            issues.emplace_back("unknown vins check failure");
+
+        ostringstream oss;
+        for (size_t i = 0; i < issues.size(); ++i)
+        {
+            if (i != 0)
+                oss << "; ";
+            oss << issues[i];
+        }
+        return oss.str();
+    };
+    auto reportVinsCheckFailure = [&]()
+    {
+        if (!isVinsCheckPassed())
+        {
+            ROS_ERROR_STREAM_THROTTLE(1.0, "[Odom Fusion] Vins odometry check failed: " << getVinsCheckFailureDetail());
+            vins_check_alarm_active = true;
+        }
+        else if (vins_check_alarm_active)
+        {
+            ROS_INFO("[Odom Fusion] Vins odometry check recovered :)");
+            vins_check_alarm_active = false;
+        }
+    };
+
     while (ros::ok())
     {
         switch (state)
         {
         case FsmState::WAIT_FOR_VINS:
         {
-            // if (calib_fcu_odom_thread.joinable())
-            //     calib_fcu_odom_thread.join();
-            // if (fcu_odom_src.isStarted() && tof_src.isStarted())
-            // {
-            //     state = FsmState::CALIB_FCU_ODOM;
-            //     // FIXME: use GLOG please 😣😣😣
-            //     ROS_INFO_STREAM("[Odom Fusion] \033[43;30mWAIT_FOR_FCU_ODOM\033[0m --> \033[43;30mCALIB_FCU_ODOM\033[0m :)");
-            // }
-
             bool inform_waiting_for_vins = true;
-            while (!vins_odom_src.isAvailable() && ros::ok())
+            while (!vins_odom_src.isStarted() && ros::ok())
             {
                 if (inform_waiting_for_vins)
                 {
@@ -634,92 +443,6 @@ int main(int argc, char **argv)
             break;
         }
 
-        // case FsmState::CALIB_FCU_ODOM:
-        // {
-        //     if (!calib_fcu_odom_thread.joinable())
-        //         calib_fcu_odom_thread = thread(
-        //             [&]()
-        //             {
-        //                 double x_avg = 0.0, y_avg = 0.0, z_avg = 0.0, yaw_avg = 0.0;
-        //                 ros::Rate calib_proc_rate(fcu_odom_src.src_freq);
-        //                 double first_yaw = 0.0;
-        //                 for (size_t i = 1; ros::ok(); ++i)
-        //                 {
-        //                     // TODO: retrieve const ref not value
-        //                     nav_msgs::Odometry latest_fcu_odom = fcu_odom_src.getLatestDataCopy();
-        //                     double x = latest_fcu_odom.pose.pose.position.x;
-        //                     double y = latest_fcu_odom.pose.pose.position.y;
-        //                     double z = latest_fcu_odom.pose.pose.position.z;
-        //                     Matrix3d R = Quaterniond(latest_fcu_odom.pose.pose.orientation.w,
-        //                                              latest_fcu_odom.pose.pose.orientation.x,
-        //                                              latest_fcu_odom.pose.pose.orientation.y,
-        //                                              latest_fcu_odom.pose.pose.orientation.z)
-        //                                      .toRotationMatrix();
-        //                     double yaw = atan2(R(1, 0), R(0, 0));
-
-        //                     if (i != 1)
-        //                     {
-        //                         if (abs(x - x_avg) > 0.013 || abs(y - y_avg) > 0.013 || abs(z - z_avg) > 0.013 || abs(yaw - yaw_avg) > 0.013)
-        //                         {
-        //                             ROS_ERROR("[Odom Fusion] \033[43;30mCALIB_FCU_ODOM\033[0m --> \033[43;30mWAIT_FOR_FCU_ODOM\033[0m Unstable initial z or yaw bias of fcu odometry, calibration restarted #^#");
-        //                             state = FsmState::WAIT_FOR_FCU_ODOM;
-        //                             break;
-        //                         }
-
-        //                         if (abs(yaw) > 3.1015926)
-        //                         {
-        //                             if (abs(first_yaw) < 1e-5)
-        //                                 first_yaw = yaw;
-
-        //                             if (yaw * first_yaw > 0)
-        //                                 ;
-        //                             else
-        //                                 yaw *= -1;
-
-        //                             ROS_WARN("[Odom Fusion] Initial yaw bias of fcu odometry is close to PI and -PI @_@");
-        //                         }
-        //                     }
-
-        //                     x_avg += (x - x_avg) / i;
-        //                     y_avg += (y - y_avg) / i;
-        //                     z_avg += (z - z_avg) / i;
-        //                     yaw_avg += (yaw - yaw_avg) / i;
-
-        //                     if (i > 77) // or 250 or 520 or 1314
-        //                     {
-        //                         p_fcu_bias << x_avg, y_avg, z_avg;
-        //                         q_fcu_bias = Quaterniond(AngleAxisd(yaw_avg, Vector3d::UnitZ()));
-        //                         ROS_INFO_STREAM("[Odom Fusion] \033[32mCalibration finished \\^_^/ bias x = " << x_avg << "m, bias y = " << y_avg << "m, bias z = " << z_avg << "m, yaw = " << yaw_avg << "rad");
-
-        //                         bool inform_waiting_for_vins = true;
-        //                         while (!vins_odom_src.isAvailable() && ros::ok())
-        //                         {
-        //                             if (inform_waiting_for_vins)
-        //                             {
-        //                                 ROS_INFO_STREAM("[Odom Fusion] Waiting for vins ...");
-        //                                 inform_waiting_for_vins = false;
-        //                             }
-        //                             this_thread::sleep_for(chrono::milliseconds(500));
-        //                         }
-        //                         ROS_INFO_STREAM("[Odom Fusion] \033[43;30mCALIB_FCU_ODOM\033[0m --> \033[43;30mTAKEOFF\033[0m :)");
-        //                         state = FsmState::TAKEOFF;
-        //                         break;
-        //                     }
-
-        //                     if (!isFcuOdomCheckPassed())
-        //                     {
-        //                         ROS_ERROR("[Odom Fusion] \033[43;30mCALIB_FCU_ODOM\033[0m --> \033[43;30mWAIT_FOR_FCU_ODOM\033[0m Exceptions in fcu odometry (probably no optical flow), calicration terminated #^#");
-        //                         ROS_ERROR("[Odom Fusion] Fcu odometry restart functionality is not supported yet !!! Pretend it's been restarted #^#");
-        //                         state = FsmState::WAIT_FOR_FCU_ODOM;
-        //                         break;
-        //                     }
-
-        //                     calib_proc_rate.sleep();
-        //                 }
-        //             });
-        //     break;
-        // }
-
         case FsmState::TAKEOFF:
         {
             if (!odom_output_thread.joinable())
@@ -728,164 +451,34 @@ int main(int argc, char **argv)
                     {
                         while (ros::ok())
                         {
-                            switch (state)
+                            if (state == FsmState::WAIT_FOR_VINS)
                             {
-                            case FsmState::TAKEOFF:
-                            case FsmState::FLY_WITH_VINS:
+                                odom_output_rate.sleep();
+                                continue;
+                            }
+
+                            nav_msgs::Odometry latest_vins_odom = vins_odom_src.getLatestDataCopy();
+
+                            switch (Z_correction_mode)
                             {
-                                nav_msgs::Odometry latest_vins_odom = vins_odom_src.getLatestDataCopy();
-
-                                applySmoother(latest_vins_odom);
-
-                                switch (Z_correction_mode)
-                                {
-                                case 0:
-                                    break;
-                                case 1:
-                                    useZFromToF(latest_vins_odom);
-                                    break;
-                                case 2:
-                                    estZFromLidarMap(latest_vins_odom);
-                                    break;
-                                }
-
-                                changeHeader(latest_vins_odom);
-                                odom_output_pub.publish(latest_vins_odom);
+                            case 0:
+                                break;
+                            case 1:
+                                useZFromToF(latest_vins_odom);
+                                break;
+                            case 2:
+                                estZFromLidarMap(latest_vins_odom);
                                 break;
                             }
 
-                            case FsmState::FLY_WITH_MSCKF:
-                            {
-                                nav_msgs::Odometry latest_msckf_odom = msckf_odom_src.getLatestDataCopy();
-
-                                applySmoother(latest_msckf_odom);
-
-                                switch (Z_correction_mode)
-                                {
-                                case 0:
-                                    break;
-                                case 1:
-                                    useZFromToF(latest_msckf_odom);
-                                    break;
-                                case 2:
-                                    estZFromLidarMap(latest_msckf_odom);
-                                    break;
-                                }
-
-                                changeHeader(latest_msckf_odom);
-                                odom_output_pub.publish(latest_msckf_odom);
-                                break;
-                            }
-
-                            case FsmState::FLY_WITH_FCU_ODOM:
-                            {
-                                nav_msgs::Odometry latest_fcu_odom = fcu_odom_src.getLatestDataCopy();
-                                nav_msgs::Odometry latest_fcu_odom_debiased;
-                                debiasFcuOdom(latest_fcu_odom, latest_fcu_odom_debiased);
-
-                                applySmoother(latest_fcu_odom_debiased);
-                                toWorldVel(latest_fcu_odom_debiased);
-
-                                switch (Z_correction_mode)
-                                {
-                                case 0:
-                                    break;
-                                case 1:
-                                    useZFromToF(latest_fcu_odom_debiased);
-                                    break;
-                                case 2:
-                                    estZFromLidarMap(latest_fcu_odom_debiased);
-                                    break;
-                                }
-
-                                changeHeader(latest_fcu_odom_debiased);
-                                odom_output_pub.publish(latest_fcu_odom_debiased);
-                                break;
-                            }
-
-                            default:
-                            {
-                                ROS_ERROR("[Odom Fusion] \033[36mThe program should never reach here ^^ No odom output *_*");
-                                break;
-                            }
-                            }
+                            changeHeader(latest_vins_odom);
+                            odom_output_pub.publish(latest_vins_odom);
 
                             odom_output_rate.sleep();
                         }
                     });
 
-            // if (!commu_with_px4ctrl_thread.joinable())
-            //     commu_with_px4ctrl_thread = thread(
-            //         [&]()
-            //         {
-            //             while (ros::ok())
-            //             {
-            //                 bool safe_to_enable_cmd_ctrl =
-            //                     (allow_high_altitude_flight ? true : (tof_src.isStarted() && tof_conservative_hgt_check.isPassed())) &&
-            //                     ((vins_odom_src.isStarted() && isVinsCheckPassed()) ||
-            //                      (msckf_odom_src.isStarted() && isMsckfCheckPassed()));
-
-            //                 if (safe_to_enable_cmd_ctrl && !allow_px4ctrl_cmd_ctrl)
-            //                 {
-            //                     std_srvs::SetBool allow;
-            //                     allow.request.data = true;
-            //                     set_cmd_ctrl_permission_srv.call(allow);
-            //                     allow_px4ctrl_cmd_ctrl = true;
-            //                     ROS_INFO("[Odom Fusion] \033[32mVIO ready and flight altitude safe !!! Allow command control ^_^");
-            //                 }
-            //                 else if (!safe_to_enable_cmd_ctrl && allow_px4ctrl_cmd_ctrl)
-            //                 {
-            //                     std_srvs::SetBool disallow;
-            //                     disallow.request.data = false;
-            //                     set_cmd_ctrl_permission_srv.call(disallow);
-            //                     allow_px4ctrl_cmd_ctrl = false;
-            //                     ROS_ERROR("[Odom Fusion] Exceptions in VIOs or flight altitude exceeding maximum range !!! Prohibit command control #^#");
-            //                 }
-
-            //                 commu_with_px4ctrl_rate.sleep();
-            //             }
-            //         });
-
-            // Try to switch to another odometer when there are exceptions in the current odometer
-            if (!isVinsCheckPassed())
-            {
-                if (msckf_odom_src.isAvailable())
-                {
-                    nav_msgs::Odometry latest_vins_odom = vins_odom_src.getLatestDataCopy();
-
-                    nav_msgs::Odometry latest_msckf_odom = msckf_odom_src.getLatestDataCopy();
-
-                    generateSmoother(latest_vins_odom, latest_msckf_odom);
-
-                    odom_output_rate = ros::Rate(msckf_odom_src.src_freq);
-                    state = FsmState::FLY_WITH_MSCKF;
-                    ROS_ERROR("[Odom Fusion] Exceptions in vins odometry !!! Fly with msckf instead #^#");
-                    inform_bad_odom = true;
-                }
-                else if (fcu_odom_src.isAvailable())
-                {
-                    nav_msgs::Odometry latest_vins_odom = vins_odom_src.getLatestDataCopy();
-
-                    nav_msgs::Odometry latest_fcu_odom = fcu_odom_src.getLatestDataCopy();
-                    nav_msgs::Odometry latest_fcu_odom_debiased;
-                    debiasFcuOdom(latest_fcu_odom, latest_fcu_odom_debiased);
-
-                    generateSmoother(latest_vins_odom, latest_fcu_odom_debiased);
-
-                    odom_output_rate = ros::Rate(fcu_odom_src.src_freq);
-                    state = FsmState::FLY_WITH_FCU_ODOM;
-                    ROS_ERROR("[Odom Fusion] Exceptions in vins odometry but unavailble msckf !!! Fly with fcu odometry instead #^#");
-                    inform_bad_odom = true;
-                }
-                else
-                {
-                    if (inform_bad_odom)
-                    {
-                        ROS_ERROR("[Odom Fusion] Exceptions in vins odometry but unavailble msckf and fcu odometry !!! Continue flying with vins #~# Watch out for crash !!!");
-                        inform_bad_odom = false;
-                    }
-                }
-            }
+            reportVinsCheckFailure();
             break;
         }
 
@@ -1158,139 +751,7 @@ int main(int argc, char **argv)
                         }
                     });
 
-            // Try to switch to another odometer when there are exceptions in the current odometer
-            if (!isVinsCheckPassed())
-            {
-                if (msckf_odom_src.isAvailable())
-                {
-                    nav_msgs::Odometry latest_vins_odom = vins_odom_src.getLatestDataCopy();
-
-                    nav_msgs::Odometry latest_msckf_odom = msckf_odom_src.getLatestDataCopy();
-
-                    generateSmoother(latest_vins_odom, latest_msckf_odom);
-
-                    odom_output_rate = ros::Rate(msckf_odom_src.src_freq);
-                    state = FsmState::FLY_WITH_MSCKF;
-                    ROS_ERROR("[Odom Fusion] Exceptions in vins odometry !!! Fly with msckf instead #^#");
-                    inform_bad_odom = true;
-                }
-                else if (fcu_odom_src.isAvailable())
-                {
-                    nav_msgs::Odometry latest_vins_odom = vins_odom_src.getLatestDataCopy();
-
-                    nav_msgs::Odometry latest_fcu_odom = fcu_odom_src.getLatestDataCopy();
-                    nav_msgs::Odometry latest_fcu_odom_debiased;
-                    debiasFcuOdom(latest_fcu_odom, latest_fcu_odom_debiased);
-
-                    generateSmoother(latest_vins_odom, latest_fcu_odom_debiased);
-
-                    odom_output_rate = ros::Rate(fcu_odom_src.src_freq);
-                    state = FsmState::FLY_WITH_FCU_ODOM;
-                    ROS_ERROR("[Odom Fusion] Exceptions in vins odometry but unavailble msckf !!! Fly with fcu odometry instead #^#");
-                    inform_bad_odom = true;
-                }
-                else
-                {
-                    if (inform_bad_odom)
-                    {
-                        ROS_ERROR("[Odom Fusion] Exceptions in vins odometry but unavailble msckf and fcu odometry !!! Continue flying with vins #~# Watch out for crash !!!");
-                        inform_bad_odom = false;
-                    }
-                }
-            }
-            break;
-        }
-
-        case FsmState::FLY_WITH_MSCKF:
-        {
-            ROS_ERROR("[Odom Fusion] Msckf is currently unsupported !!! The program should never reach here @_@");
-
-            // Tendency to use higher priority odometers
-            if (vins_odom_src.isAvailable())
-            {
-                nav_msgs::Odometry latest_msckf_odom = msckf_odom_src.getLatestDataCopy();
-
-                nav_msgs::Odometry latest_vins_odom = vins_odom_src.getLatestDataCopy();
-
-                generateSmoother(latest_msckf_odom, latest_vins_odom);
-
-                odom_output_rate = ros::Rate(vins_odom_src.src_freq);
-                state = FsmState::FLY_WITH_VINS;
-                ROS_INFO_STREAM("[Odom Fusion] Vins is availble while flying with msckf \033[43;30mFLY_WITH_MSCKF\033[0m --> \033[43;30mFLY_WITH_VINS\033[0m :)");
-                inform_bad_odom = true;
-            }
-
-            // Try to switch to another odometer when there are exceptions in the current odometer
-            if (!isMsckfCheckPassed())
-            {
-                if (fcu_odom_src.isAvailable())
-                {
-                    nav_msgs::Odometry latest_msckf_odom = msckf_odom_src.getLatestDataCopy();
-
-                    nav_msgs::Odometry latest_fcu_odom = fcu_odom_src.getLatestDataCopy();
-                    nav_msgs::Odometry latest_fcu_odom_debiased;
-                    debiasFcuOdom(latest_fcu_odom, latest_fcu_odom_debiased);
-
-                    generateSmoother(latest_msckf_odom, latest_fcu_odom_debiased);
-
-                    odom_output_rate = ros::Rate(fcu_odom_src.src_freq);
-                    state = FsmState::FLY_WITH_FCU_ODOM;
-                    ROS_ERROR("[Odom Fusion] Exceptions in msckf odometry but unavailble vins !!! Fly with fcu odometry instead #^#");
-                    inform_bad_odom = true;
-                }
-                else
-                {
-                    if (inform_bad_odom)
-                    {
-                        ROS_ERROR("[Odom Fusion] Exceptions in msckf odometry but unavailble vins and fcu odometry !!! Continue flying with msckf #~# Watch out for crash !!!");
-                        inform_bad_odom = false;
-                    }
-                }
-            }
-            break;
-        }
-
-        case FsmState::FLY_WITH_FCU_ODOM:
-        {
-            // Tendency to use higher priority odometers
-            if (vins_odom_src.isAvailable())
-            {
-                nav_msgs::Odometry latest_fcu_odom = fcu_odom_src.getLatestDataCopy();
-                nav_msgs::Odometry latest_fcu_odom_debiased;
-                debiasFcuOdom(latest_fcu_odom, latest_fcu_odom_debiased);
-
-                nav_msgs::Odometry latest_vins_odom = vins_odom_src.getLatestDataCopy();
-
-                generateSmoother(latest_fcu_odom_debiased, latest_vins_odom);
-
-                odom_output_rate = ros::Rate(vins_odom_src.src_freq);
-                state = FsmState::FLY_WITH_VINS;
-                ROS_INFO_STREAM("[Odom Fusion] Vins is availble while flying with fcu odometry \033[43;30mFLY_WITH_FCU_ODOM\033[0m --> \033[43;30mFLY_WITH_VINS\033[0m :)");
-                inform_bad_odom = true;
-            }
-            else if (msckf_odom_src.isAvailable())
-            {
-                nav_msgs::Odometry latest_fcu_odom = fcu_odom_src.getLatestDataCopy();
-                nav_msgs::Odometry latest_fcu_odom_debiased;
-                debiasFcuOdom(latest_fcu_odom, latest_fcu_odom_debiased);
-
-                nav_msgs::Odometry latest_msckf_odom = msckf_odom_src.getLatestDataCopy();
-
-                generateSmoother(latest_fcu_odom_debiased, latest_msckf_odom);
-
-                odom_output_rate = ros::Rate(msckf_odom_src.src_freq);
-                state = FsmState::FLY_WITH_MSCKF;
-                ROS_INFO_STREAM("[Odom Fusion] Msckf is availble but vins is not while flying with fcu odometry \033[43;30mFLY_WITH_FCU_ODOM\033[0m --> \033[43;30mFLY_WITH_MSCKF\033[0m :|");
-                inform_bad_odom = true;
-            }
-            else
-            {
-                if (inform_bad_odom)
-                {
-                    ROS_ERROR("[Odom Fusion] Unavailble vins and msckf :( Continue flying with fcu odometry #~# Watch out for crash !!!");
-                    inform_bad_odom = false;
-                }
-            }
+            reportVinsCheckFailure();
             break;
         }
 
