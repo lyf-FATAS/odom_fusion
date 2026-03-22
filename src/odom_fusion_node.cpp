@@ -38,9 +38,9 @@ using namespace pcl;
 
 enum FsmState
 {
-    WAIT_FOR_VINS,
+    WAIT_FOR_ODOM,
     TAKEOFF,
-    FLY_WITH_VINS
+    FLY_WITH_ODOM
 };
 
 int main(int argc, char **argv)
@@ -50,6 +50,11 @@ int main(int argc, char **argv)
 
     string hyperparam_path = argv[1];
     cv::FileStorage param(hyperparam_path, cv::FileStorage::READ);
+    string odom_topic;
+    double odom_freq, odom_timeout;
+    nh.param("odom_topic", odom_topic, string("/fusion_odometry/current_point_odom"));
+    nh.param("odom_freq", odom_freq, 200.0);
+    nh.param("odom_timeout", odom_timeout, 0.1);
 
     int ros_logger_level = param["ros_logger_level"];
     switch (ros_logger_level)
@@ -71,7 +76,8 @@ int main(int argc, char **argv)
     }
 
     //************* Data sources *************//
-    DataSrc<nav_msgs::Odometry> vins_odom_src(nh, param["vins_odom_topic"], param["vins_odom_freq"], param["vins_odom_timeout"]);
+    DataSrc<nav_msgs::Odometry> odom_src(nh, odom_topic, odom_freq, odom_timeout);
+    ROS_INFO_STREAM("[Odom Fusion] Input odom: topic=" << odom_topic << ", freq=" << odom_freq << " Hz, timeout=" << odom_timeout << " s");
 
     double init_x, init_y, init_z;
     if (getenv("ipx") != nullptr && getenv("ipy") != nullptr && getenv("ipz") != nullptr)
@@ -89,31 +95,31 @@ int main(int argc, char **argv)
     spinner.start();
 
     //************* Data checks *************//
-    PosMagCheck vins_takeoff_pos_mag_check(vins_odom_src, param["pos_mag_check_freq"],
+    PosMagCheck odom_takeoff_pos_mag_check(odom_src, param["pos_mag_check_freq"],
                                            param["min_x_takeoff"], param["max_x_takeoff"],
                                            param["min_y_takeoff"], param["max_y_takeoff"],
                                            param["min_z_takeoff"], param["max_z_takeoff"],
                                            init_x, init_y, init_z);
-    PosMagCheck vins_pos_mag_check(vins_odom_src, param["pos_mag_check_freq"],
+    PosMagCheck odom_pos_mag_check(odom_src, param["pos_mag_check_freq"],
                                    param["min_x"], param["max_x"],
                                    param["min_y"], param["max_y"],
                                    param["min_z"], param["max_z"],
                                    init_x, init_y, init_z);
-    VelMagCheck vins_vel_mag_check(vins_odom_src, param["vel_mag_check_freq"], param["max_vel"]);
-    PosContinuityCheck vins_pos_continuity_check(vins_odom_src, param["continuity_check_freq"], param["pos_max_jump"], param["pos_jump_cooling_time"]);
+    VelMagCheck odom_vel_mag_check(odom_src, param["vel_mag_check_freq"], param["max_vel"]);
+    PosContinuityCheck odom_pos_continuity_check(odom_src, param["continuity_check_freq"], param["pos_max_jump"], param["pos_jump_cooling_time"]);
     ToFContinuityCheck tof_continuity_check(tof_src, param["continuity_check_freq"], param["tof_max_jump"], param["tof_jump_cooling_time"]);
     tof_continuity_check.stopCheck();
 
-    auto isVinsCheckPassed = [&]()
+    auto isOdomCheckPassed = [&]()
     {
-        return vins_takeoff_pos_mag_check.isPassed() &&
-               vins_pos_mag_check.isPassed() &&
-               vins_vel_mag_check.isPassed() &&
-               vins_pos_continuity_check.isPassed();
+        return odom_takeoff_pos_mag_check.isPassed() &&
+               odom_pos_mag_check.isPassed() &&
+               odom_vel_mag_check.isPassed() &&
+               odom_pos_continuity_check.isPassed();
     };
 
     //************* Main loop *************//
-    atomic<FsmState> state(FsmState::WAIT_FOR_VINS);
+    atomic<FsmState> state(FsmState::WAIT_FOR_ODOM);
     ros::Rate data_check_rate(10.0);
 
     ros::Subscriber takeoff_signal_sub =
@@ -122,19 +128,19 @@ int main(int argc, char **argv)
                                                   {
                                                       switch (state.load())
                                                       {
-                                                      case FsmState::WAIT_FOR_VINS:
+                                                      case FsmState::WAIT_FOR_ODOM:
                                                       {
-                                                          ROS_ERROR("[Odom Fusion] Vins is not ready. No odometry output and takeoff should fail #^#");
+                                                          ROS_ERROR("[Odom Fusion] Input odom is not ready. No odometry output and takeoff should fail #^#");
                                                           break;
                                                       }
                                                       case FsmState::TAKEOFF:
                                                       {
                                                           break;
                                                       }
-                                                      case FsmState::FLY_WITH_VINS:
+                                                      case FsmState::FLY_WITH_ODOM:
                                                       {
                                                           if (signal->takeoff_land_cmd == 1)
-                                                              ROS_WARN("[Odom Fusion] Takeoff signal received while already flying with vins :|");
+                                                              ROS_WARN("[Odom Fusion] Takeoff signal received while already flying with odom :|");
                                                           break;
                                                       }
                                                       default:
@@ -151,22 +157,22 @@ int main(int argc, char **argv)
                                                  {
                                                      switch (state.load())
                                                      {
-                                                     case FsmState::WAIT_FOR_VINS:
+                                                     case FsmState::WAIT_FOR_ODOM:
                                                      {
                                                          ROS_ERROR("[Odom Fusion] \033[36mThe program should never reach here ^^");
                                                          break;
                                                      }
                                                      case FsmState::TAKEOFF:
                                                      {
-                                                         vins_takeoff_pos_mag_check.stopCheck();
+                                                         odom_takeoff_pos_mag_check.stopCheck();
                                                          tof_continuity_check.startCheck();
-                                                         state.store(FsmState::FLY_WITH_VINS);
-                                                         ROS_INFO("[Odom Fusion] \033[32mTakeoff done ^v^ \033[43;30mTAKEOFF\033[0m --> \033[43;30mFLY_WITH_VINS\033[0m :)");
+                                                         state.store(FsmState::FLY_WITH_ODOM);
+                                                         ROS_INFO("[Odom Fusion] \033[32mTakeoff done ^v^ \033[43;30mTAKEOFF\033[0m --> \033[43;30mFLY_WITH_ODOM\033[0m :)");
                                                          break;
                                                      }
-                                                     case FsmState::FLY_WITH_VINS:
+                                                     case FsmState::FLY_WITH_ODOM:
                                                      {
-                                                         ROS_WARN("[Odom Fusion] Hover signal received while already flying with vins :|");
+                                                         ROS_WARN("[Odom Fusion] Hover signal received while already flying with odom :|");
                                                          break;
                                                      }
                                                      default:
@@ -183,7 +189,7 @@ int main(int argc, char **argv)
     int Z_correction_mode = param["Z_correction_mode"];
     double est_z_rate = param["est_z_rate"];
     LowPassFilter<double> z_lpf(param["cutoff_frequency_z"], param["max_delta_z"]);
-    atomic<double> z_vio_latest(-23333.33);
+    atomic<double> z_odom_latest(-23333.33);
     bool publish_debug_topic = (int)param["publish_debug_topic"];
     ros::Publisher debug_z_est_pub = nh.advertise<std_msgs::Float32>("z_est", 10);
 
@@ -210,8 +216,8 @@ int main(int argc, char **argv)
     };
     auto useZFromToF = [&](nav_msgs::Odometry &odom_output)
     {
-        const double z_vio = odom_output.pose.pose.position.z;
-        z_vio_latest = z_vio;
+        const double z_odom = odom_output.pose.pose.position.z;
+        z_odom_latest = z_odom;
         Quaterniond odom_q(odom_output.pose.pose.orientation.w,
                            odom_output.pose.pose.orientation.x,
                            odom_output.pose.pose.orientation.y,
@@ -227,12 +233,12 @@ int main(int argc, char **argv)
             {
                 double z_tof = 0.0;
                 getToFHeightInWorldZ(odom_q, true, z_tof);
-                delta_z_from_tof = z_tof - z_vio;
+                delta_z_from_tof = z_tof - z_odom;
                 odom_output.pose.pose.position.z = z_tof;
             }
             else
             {
-                ROS_ERROR_THROTTLE(1.0, "[Odom Fusion] ToF stream is unstable during TAKEOFF. Fall back to VIO z and reset delta_z_from_tof #^#");
+                ROS_ERROR_THROTTLE(1.0, "[Odom Fusion] ToF stream is unstable during TAKEOFF. Fall back to odom z and reset delta_z_from_tof #^#");
                 delta_z_from_tof = 0.0;
             }
             return;
@@ -240,7 +246,7 @@ int main(int argc, char **argv)
 
         // When enabling /use_sim_time and playing rosbag with --clock, ros::Time::now() is only updated at 100Hz 😤😤😤
         double now_in_seconds = chrono::duration_cast<chrono::duration<double>>(chrono::high_resolution_clock::now().time_since_epoch()).count();
-        z_lpf.input(z_vio + delta_z_from_tof.load(), now_in_seconds);
+        z_lpf.input(z_odom + delta_z_from_tof.load(), now_in_seconds);
         odom_output.pose.pose.position.z = z_lpf.output();
     };
 
@@ -314,7 +320,7 @@ int main(int argc, char **argv)
     double delta_z_from_est = 0.0;
     auto estZFromLidarMap = [&](nav_msgs::Odometry &odom_output)
     {
-        z_vio_latest = odom_output.pose.pose.position.z;
+        z_odom_latest = odom_output.pose.pose.position.z;
 
         bool ground_smooth = tof_continuity_check.isPassed();
         if (ground_smooth && z_est_updated)
@@ -339,23 +345,23 @@ int main(int argc, char **argv)
         odom_output.child_frame_id = "drone_" + to_string(self_id);
         odom_output.header.frame_id = "world";
     };
-    ros::Rate odom_output_rate(vins_odom_src.src_freq);
+    ros::Rate odom_output_rate(odom_src.src_freq);
     ros::Publisher odom_output_pub = nh.advertise<nav_msgs::Odometry>(param["odom_output_topic"], 100);
-    bool vins_check_alarm_active = false;
+    bool odom_check_alarm_active = false;
     auto formatDouble = [](double value)
     {
         ostringstream oss;
         oss << fixed << setprecision(3) << value;
         return oss.str();
     };
-    auto getVinsCheckFailureDetail = [&]() -> string
+    auto getOdomCheckFailureDetail = [&]() -> string
     {
         vector<string> issues;
-        const double stream_timeout = vins_odom_src.src_timeout < 0.0 ? 5.0 / vins_odom_src.src_freq : vins_odom_src.src_timeout;
-        if (!vins_odom_src.isStable())
+        const double stream_timeout = odom_src.src_timeout < 0.0 ? 5.0 / odom_src.src_freq : odom_src.src_timeout;
+        if (!odom_src.isStable())
             issues.emplace_back("data_stream_unstable: no odom received for more than " + formatDouble(stream_timeout) + "s");
 
-        nav_msgs::Odometry latest_odom = vins_odom_src.getLatestDataCopy();
+        nav_msgs::Odometry latest_odom = odom_src.getLatestDataCopy();
         const double x = latest_odom.pose.pose.position.x - init_x;
         const double y = latest_odom.pose.pose.position.y - init_y;
         const double z = latest_odom.pose.pose.position.z - init_z;
@@ -381,26 +387,26 @@ int main(int argc, char **argv)
                 issues.emplace_back(label + ".z=" + formatDouble(z) + " < min=" + formatDouble(check.min_z));
             else if (z > check.max_z)
                 issues.emplace_back(label + ".z=" + formatDouble(z) + " > max=" + formatDouble(check.max_z));
-            else if (vins_odom_src.isStable())
+            else if (odom_src.isStable())
                 issues.emplace_back(label + " failed but current sample is within bounds");
         };
 
-        appendPosMagIssue(vins_takeoff_pos_mag_check, "takeoff_position_check");
-        appendPosMagIssue(vins_pos_mag_check, "position_check");
+        appendPosMagIssue(odom_takeoff_pos_mag_check, "takeoff_position_check");
+        appendPosMagIssue(odom_pos_mag_check, "position_check");
 
-        if (vins_vel_mag_check.enable_check.load() && !vins_vel_mag_check.isPassed())
+        if (odom_vel_mag_check.enable_check.load() && !odom_vel_mag_check.isPassed())
         {
-            if (speed > vins_vel_mag_check.max_vel)
-                issues.emplace_back("velocity_check: speed=" + formatDouble(speed) + " > max=" + formatDouble(vins_vel_mag_check.max_vel));
-            else if (vins_odom_src.isStable())
+            if (speed > odom_vel_mag_check.max_vel)
+                issues.emplace_back("velocity_check: speed=" + formatDouble(speed) + " > max=" + formatDouble(odom_vel_mag_check.max_vel));
+            else if (odom_src.isStable())
                 issues.emplace_back("velocity_check failed but current speed=" + formatDouble(speed));
         }
 
-        if (vins_pos_continuity_check.enable_check.load() && !vins_pos_continuity_check.isPassed())
+        if (odom_pos_continuity_check.enable_check.load() && !odom_pos_continuity_check.isPassed())
         {
-            if (vins_odom_src.getBufSize() >= 2)
+            if (odom_src.getBufSize() >= 2)
             {
-                nav_msgs::Odometry previous_odom = vins_odom_src.getPenultimateCopy(1);
+                nav_msgs::Odometry previous_odom = odom_src.getPenultimateCopy(1);
                 const Vector3d latest_pos(latest_odom.pose.pose.position.x,
                                           latest_odom.pose.pose.position.y,
                                           latest_odom.pose.pose.position.z);
@@ -408,11 +414,11 @@ int main(int argc, char **argv)
                                             previous_odom.pose.pose.position.y,
                                             previous_odom.pose.pose.position.z);
                 const double jump = (latest_pos - previous_pos).norm();
-                if (jump > vins_pos_continuity_check.max_jump)
-                    issues.emplace_back("position_continuity_check: jump=" + formatDouble(jump) + " > max=" + formatDouble(vins_pos_continuity_check.max_jump));
-                else if (vins_pos_continuity_check.unstable)
+                if (jump > odom_pos_continuity_check.max_jump)
+                    issues.emplace_back("position_continuity_check: jump=" + formatDouble(jump) + " > max=" + formatDouble(odom_pos_continuity_check.max_jump));
+                else if (odom_pos_continuity_check.unstable)
                 {
-                    const double remaining_cooling = max(0.0, vins_pos_continuity_check.cooling_time - (ros::Time::now() - vins_pos_continuity_check.unstable_start_time).toSec());
+                    const double remaining_cooling = max(0.0, odom_pos_continuity_check.cooling_time - (ros::Time::now() - odom_pos_continuity_check.unstable_start_time).toSec());
                     issues.emplace_back("position_continuity_check: in cooling window, remaining=" + formatDouble(remaining_cooling) + "s after previous jump");
                 }
                 else
@@ -423,7 +429,7 @@ int main(int argc, char **argv)
         }
 
         if (issues.empty())
-            issues.emplace_back("unknown vins check failure");
+            issues.emplace_back("unknown odom check failure");
 
         ostringstream oss;
         for (size_t i = 0; i < issues.size(); ++i)
@@ -434,17 +440,17 @@ int main(int argc, char **argv)
         }
         return oss.str();
     };
-    auto reportVinsCheckFailure = [&]()
+    auto reportOdomCheckFailure = [&]()
     {
-        if (!isVinsCheckPassed())
+        if (!isOdomCheckPassed())
         {
-            ROS_ERROR_STREAM_THROTTLE(1.0, "[Odom Fusion] Vins odometry check failed: " << getVinsCheckFailureDetail());
-            vins_check_alarm_active = true;
+            ROS_ERROR_STREAM_THROTTLE(1.0, "[Odom Fusion] Input odometry check failed: " << getOdomCheckFailureDetail());
+            odom_check_alarm_active = true;
         }
-        else if (vins_check_alarm_active)
+        else if (odom_check_alarm_active)
         {
-            ROS_INFO("[Odom Fusion] Vins odometry check recovered :)");
-            vins_check_alarm_active = false;
+            ROS_INFO("[Odom Fusion] Input odometry check recovered :)");
+            odom_check_alarm_active = false;
         }
     };
 
@@ -452,19 +458,19 @@ int main(int argc, char **argv)
     {
         switch (state.load())
         {
-        case FsmState::WAIT_FOR_VINS:
+        case FsmState::WAIT_FOR_ODOM:
         {
-            bool inform_waiting_for_vins = true;
-            while ((!vins_odom_src.isStarted() || (Z_correction_mode == 1 && !tof_src.isStarted())) && ros::ok())
+            bool inform_waiting_for_odom = true;
+            while ((!odom_src.isStarted() || (Z_correction_mode == 1 && !tof_src.isStarted())) && ros::ok())
             {
-                if (inform_waiting_for_vins)
+                if (inform_waiting_for_odom)
                 {
-                    ROS_INFO_STREAM("[Odom Fusion] Waiting for vins" << ((Z_correction_mode == 1) ? " and tof" : "") << " ...");
-                    inform_waiting_for_vins = false;
+                    ROS_INFO_STREAM("[Odom Fusion] Waiting for odom" << ((Z_correction_mode == 1) ? " and tof" : "") << " ...");
+                    inform_waiting_for_odom = false;
                 }
                 this_thread::sleep_for(chrono::milliseconds(500));
             }
-            ROS_INFO_STREAM("[Odom Fusion] \033[43;30mWAIT_FOR_VINS\033[0m --> \033[43;30mTAKEOFF\033[0m :)");
+            ROS_INFO_STREAM("[Odom Fusion] \033[43;30mWAIT_FOR_ODOM\033[0m --> \033[43;30mTAKEOFF\033[0m :)");
             state.store(FsmState::TAKEOFF);
             break;
         }
@@ -477,46 +483,46 @@ int main(int argc, char **argv)
                     {
                         while (ros::ok())
                         {
-                            if (state.load() == FsmState::WAIT_FOR_VINS)
+                            if (state.load() == FsmState::WAIT_FOR_ODOM)
                             {
                                 odom_output_rate.sleep();
                                 continue;
                             }
 
-                            nav_msgs::Odometry latest_vins_odom = vins_odom_src.getLatestDataCopy();
+                            nav_msgs::Odometry latest_odom = odom_src.getLatestDataCopy();
 
                             switch (Z_correction_mode)
                             {
                             case 0:
                                 break;
                             case 1:
-                                useZFromToF(latest_vins_odom);
+                                useZFromToF(latest_odom);
                                 break;
                             case 2:
-                                estZFromLidarMap(latest_vins_odom);
+                                estZFromLidarMap(latest_odom);
                                 break;
                             }
 
-                            changeHeader(latest_vins_odom);
-                            odom_output_pub.publish(latest_vins_odom);
+                            changeHeader(latest_odom);
+                            odom_output_pub.publish(latest_odom);
 
                             odom_output_rate.sleep();
                         }
                     });
 
-            reportVinsCheckFailure();
+            reportOdomCheckFailure();
             break;
         }
 
-        case FsmState::FLY_WITH_VINS:
+        case FsmState::FLY_WITH_ODOM:
         {
-            if (!est_z_from_tof_thread.joinable() && Z_correction_mode == 1 && z_vio_latest > -23333.3)
+            if (!est_z_from_tof_thread.joinable() && Z_correction_mode == 1 && z_odom_latest > -23333.3)
                 est_z_from_tof_thread = thread(
                     [&]()
                     {
                         ros::Rate r(est_z_rate);
                         bool first_z_tof_ = true;
-                        double first_z_tof, first_z_vio, prev_z_tof, prev_z_vio;
+                        double first_z_tof, first_z_odom, prev_z_tof, prev_z_odom;
                         double prev_delta_z = 0;
                         auto resetToFTracking = [&]()
                         {
@@ -557,29 +563,29 @@ int main(int argc, char **argv)
                                 continue;
                             }
 
-                            double z_vio = z_vio_latest;
+                            double z_odom = z_odom_latest;
                             if (first_z_tof_)
                             {
                                 prev_delta_z = delta_z_from_tof.load();
                                 first_z_tof = prev_z_tof = z_tof;
-                                first_z_vio = prev_z_vio = z_vio;
+                                first_z_odom = prev_z_odom = z_odom;
                                 first_z_tof_ = false;
                             }
                             else
                             {
                                 double z_tof_diff = z_tof - prev_z_tof;
-                                double z_vio_diff = z_vio - prev_z_vio;
-                                if (abs(z_tof_diff - z_vio_diff) > 0.5)
+                                double z_odom_diff = z_odom - prev_z_odom;
+                                if (abs(z_tof_diff - z_odom_diff) > 0.5)
                                 {
-                                    ROS_WARN_STREAM("[Odom Fusion] Exception in delta_z from ToF (diff of delta_z from vio = " << abs(z_tof_diff - z_vio_diff) << "m) #^#");
+                                    ROS_WARN_STREAM("[Odom Fusion] Exception in delta_z from ToF (diff of delta_z from odom = " << abs(z_tof_diff - z_odom_diff) << "m) #^#");
                                     resetToFTracking();
                                 }
                                 else
                                 {
-                                    delta_z_from_tof = (z_tof - first_z_tof) - (z_vio - first_z_vio) + prev_delta_z;
+                                    delta_z_from_tof = (z_tof - first_z_tof) - (z_odom - first_z_odom) + prev_delta_z;
 
                                     prev_z_tof = z_tof;
-                                    prev_z_vio = z_vio;
+                                    prev_z_odom = z_odom;
 
                                     if (publish_debug_topic)
                                     {
@@ -594,13 +600,13 @@ int main(int argc, char **argv)
                         }
                     });
 
-            if (!est_z_from_lidar_map_thread.joinable() && Z_correction_mode == 2 && z_vio_latest > -23333.3)
+            if (!est_z_from_lidar_map_thread.joinable() && Z_correction_mode == 2 && z_odom_latest > -23333.3)
                 est_z_from_lidar_map_thread = thread(
                     [&]()
                     {
                         ros::Rate r(est_z_rate);
                         bool first_z_est = true;
-                        double prev_z_est, prev_z_vio;
+                        double prev_z_est, prev_z_odom;
                         bool inform_insufficient_pts = true;
                         bool inform_bad_ground_shape = true;
                         while (ros::ok())
@@ -732,16 +738,16 @@ int main(int argc, char **argv)
                                 if (first_z_est)
                                 {
                                     prev_z_est = z_est;
-                                    prev_z_vio = z_vio_latest;
+                                    prev_z_odom = z_odom_latest;
                                     first_z_est = false;
                                 }
                                 else
                                 {
                                     double z_est_diff = z_est - prev_z_est;
-                                    double z_vio_diff = z_vio_latest - prev_z_vio;
-                                    if (abs(z_est_diff - z_vio_diff) > 0.23)
+                                    double z_odom_diff = z_odom_latest - prev_z_odom;
+                                    if (abs(z_est_diff - z_odom_diff) > 0.23)
                                     {
-                                        ROS_WARN_STREAM("[Odom Fusion] Exception in z estimation (diff of speed.z = " << abs(z_est_diff - z_vio_diff) << "m) #^#");
+                                        ROS_WARN_STREAM("[Odom Fusion] Exception in z estimation (diff of speed.z = " << abs(z_est_diff - z_odom_diff) << "m) #^#");
                                         z_est_updated = false;
                                         first_z_est = true;
                                     }
@@ -749,7 +755,7 @@ int main(int argc, char **argv)
                                     {
                                         z_est_updated = true;
                                         prev_z_est = z_est;
-                                        prev_z_vio = z_vio_latest;
+                                        prev_z_odom = z_odom_latest;
 
                                         if (publish_debug_topic)
                                         {
@@ -765,7 +771,7 @@ int main(int argc, char **argv)
                         }
                     });
 
-            reportVinsCheckFailure();
+            reportOdomCheckFailure();
             break;
         }
 

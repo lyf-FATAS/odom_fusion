@@ -1,4 +1,11 @@
 <launch>
+    <arg name="odom_topic" default="/fusion_odometry/current_point_odom"/>
+    <arg name="odom_freq" default="200.0"/>
+    <arg name="odom_timeout" default="0.1"/>
     <param name="/use_sim_time" value="false"/>
-    <node name="odom_fusion" pkg="odom_fusion" type="odom_fusion_node" output="screen" args="$(find odom_fusion)/config/hyperparams.yaml $(find odom_fusion)/map/fy.pcd" />
+    <node name="odom_fusion" pkg="odom_fusion" type="odom_fusion_node" output="screen" args="$(find odom_fusion)/config/hyperparams.yaml $(find odom_fusion)/map/fy.pcd">
+        <param name="odom_topic" value="$(arg odom_topic)" />
+        <param name="odom_freq" value="$(arg odom_freq)" />
+        <param name="odom_timeout" value="$(arg odom_timeout)" />
+    </node>
 </launch>

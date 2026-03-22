@@ -1,6 +1,6 @@
 %YAML:1.0
 
-Z_correction_mode: 1  # 0: z from vio  1: z from ToF  2: estimate z from lidar map
+Z_correction_mode: 1  # 0: z from input odom  1: z from ToF  2: estimate z from lidar map
 est_z_rate: 20.0
 kdtree_search_radius: 1.0
 min_2nd_singular_value: 0.77
@@ -12,26 +12,9 @@ max_delta_z: 0.1
 ros_logger_level: 1  # 0: Debug  1: Info  2: Warn  3: Error
 publish_debug_topic: 1
 
-# Data src 0
-vins_odom_topic: "/fusion_odometry/current_point_odom"
-vins_odom_freq: 200.0
-vins_odom_timeout: 0.1
-
-# Data src 1
-msckf_odom_topic: "/msckf/vio/imu_propagate"
-msckf_odom_freq: 200.0
-msckf_odom_timeout: 0.1
-
-# Data src 2
-fcu_odom_topic: "/mavros/local_position/odom"
-fcu_odom_freq: 105.0  # Make sure the output freq is > 100Hz to pass the drone_node test
-fcu_odom_timeout: 0.1
-
-# Data src 3
 imu_topic: "/mavros/imu/data"
 imu_freq: 200.0
 
-# Data src 4
 tof_topic: "/mavros/px4flow/raw/optical_flow_rad"
 tof_freq: 10.0
 tof_timeout: 0.2
