@@ -577,22 +577,19 @@ int main(int argc, char **argv)
                                 double z_odom_diff = z_odom - prev_z_odom;
                                 if (abs(z_tof_diff - z_odom_diff) > 0.5)
                                 {
-                                    ROS_WARN_STREAM("[Odom Fusion] Exception in delta_z from ToF (diff of delta_z from odom = " << abs(z_tof_diff - z_odom_diff) << "m) #^#");
-                                    resetToFTracking();
+                                    ROS_WARN_STREAM("[Odom Fusion] Large discrepancy between ToF z change and odom z change (|dz_tof - dz_odom| = " << abs(z_tof_diff - z_odom_diff) << "m). Continue applying ToF-based z correction because odom z is likely unreliable #^#");
                                 }
-                                else
+
+                                delta_z_from_tof = (z_tof - first_z_tof) - (z_odom - first_z_odom) + prev_delta_z;
+
+                                prev_z_tof = z_tof;
+                                prev_z_odom = z_odom;
+
+                                if (publish_debug_topic)
                                 {
-                                    delta_z_from_tof = (z_tof - first_z_tof) - (z_odom - first_z_odom) + prev_delta_z;
-
-                                    prev_z_tof = z_tof;
-                                    prev_z_odom = z_odom;
-
-                                    if (publish_debug_topic)
-                                    {
-                                        std_msgs::Float32 z_est_msg;
-                                        z_est_msg.data = z_tof;
-                                        debug_z_est_pub.publish(z_est_msg);
-                                    }
+                                    std_msgs::Float32 z_est_msg;
+                                    z_est_msg.data = z_tof;
+                                    debug_z_est_pub.publish(z_est_msg);
                                 }
                             }
 
