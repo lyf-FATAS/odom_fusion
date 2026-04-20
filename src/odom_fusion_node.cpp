@@ -199,9 +199,8 @@ int main(int argc, char **argv)
 
     mutex latest_q_mtx;
     Quaterniond latest_q;
-    auto getToFHeightInWorldZ = [&](const Quaterniond &q, bool clamp_negative_to_zero, double &z_tof) -> bool
+    auto projectToFDistanceToWorldZ = [&](double tof_dist, const Quaterniond &q, bool clamp_negative_to_zero, double &z_tof) -> bool
     {
-        double tof_dist = tof_src.getLatestDataCopy().distance;
         if (tof_dist < 0.0)
         {
             if (!clamp_negative_to_zero)
@@ -213,6 +212,10 @@ int main(int argc, char **argv)
         Vector3d tof_vec_world = q * tof_vec_body;
         z_tof = abs(tof_vec_world.z());
         return true;
+    };
+    auto getToFHeightInWorldZ = [&](const Quaterniond &q, bool clamp_negative_to_zero, double &z_tof) -> bool
+    {
+        return projectToFDistanceToWorldZ(tof_src.getLatestDataCopy().distance, q, clamp_negative_to_zero, z_tof);
     };
     auto useZFromToF = [&](nav_msgs::Odometry &odom_output)
     {
@@ -522,15 +525,38 @@ int main(int argc, char **argv)
                     {
                         ros::Rate r(est_z_rate);
                         bool first_z_tof_ = true;
-                        double first_z_tof, first_z_odom, prev_z_tof, prev_z_odom;
+                        double first_z_tof, first_z_odom, prev_z_tof, prev_z_odom, prev_tof_dist;
                         double prev_delta_z = 0;
+                        bool tof_jump_cooling = false;
+                        chrono::steady_clock::time_point tof_jump_cooling_start;
                         auto resetToFTracking = [&]()
                         {
                             first_z_tof_ = true;
                             prev_delta_z = delta_z_from_tof.load();
                         };
+                        auto startToFJumpCooling = [&](double jump)
+                        {
+                            ROS_ERROR_STREAM("[Odom Fusion] ToF distance jump detected in z correction thread (jump = " << jump << "m > " << tof_continuity_check.max_jump << "m). Freeze ToF z correction for " << tof_continuity_check.cooling_time << "s #^#");
+                            tof_jump_cooling = true;
+                            tof_jump_cooling_start = chrono::steady_clock::now();
+                            resetToFTracking();
+                        };
                         while (ros::ok())
                         {
+                            if (tof_jump_cooling)
+                            {
+                                const double elapsed = chrono::duration_cast<chrono::duration<double>>(chrono::steady_clock::now() - tof_jump_cooling_start).count();
+                                if (elapsed < tof_continuity_check.cooling_time)
+                                {
+                                    r.sleep();
+                                    continue;
+                                }
+
+                                tof_jump_cooling = false;
+                                resetToFTracking();
+                                ROS_INFO("[Odom Fusion] ToF jump cooling finished. Resume ToF z correction with a new baseline :)");
+                            }
+
                             if (!tof_continuity_check.isPassed())
                             {
                                 ROS_ERROR_THROTTLE(1.0, "[Odom Fusion] ToF continuity check failed !!! Skip this frame of ToF z correction #^#");
@@ -554,8 +580,9 @@ int main(int argc, char **argv)
                                 continue;
                             }
 
+                            double tof_dist = tof_src.getLatestDataCopy().distance;
                             double z_tof = 0.0;
-                            if (!getToFHeightInWorldZ(current_q, false, z_tof))
+                            if (!projectToFDistanceToWorldZ(tof_dist, current_q, false, z_tof))
                             {
                                 ROS_ERROR_THROTTLE(1.0, "[Odom Fusion] Invalid ToF sample (distance < 0) !!! Skip this frame of ToF z correction #^#");
                                 resetToFTracking();
@@ -569,10 +596,19 @@ int main(int argc, char **argv)
                                 prev_delta_z = delta_z_from_tof.load();
                                 first_z_tof = prev_z_tof = z_tof;
                                 first_z_odom = prev_z_odom = z_odom;
+                                prev_tof_dist = tof_dist;
                                 first_z_tof_ = false;
                             }
                             else
                             {
+                                double tof_dist_jump = abs(tof_dist - prev_tof_dist);
+                                if (tof_dist_jump > tof_continuity_check.max_jump)
+                                {
+                                    startToFJumpCooling(tof_dist_jump);
+                                    r.sleep();
+                                    continue;
+                                }
+
                                 double z_tof_diff = z_tof - prev_z_tof;
                                 double z_odom_diff = z_odom - prev_z_odom;
                                 if (abs(z_tof_diff - z_odom_diff) > 0.5)
@@ -584,6 +620,7 @@ int main(int argc, char **argv)
 
                                 prev_z_tof = z_tof;
                                 prev_z_odom = z_odom;
+                                prev_tof_dist = tof_dist;
 
                                 if (publish_debug_topic)
                                 {
